@@ -53,8 +53,8 @@ parameter = {
     "sigma": 10 ** (-5),  # noise power
     'new_adj': new_adj,
     'start': 0,
-    'application_delay': 1003,
-    'energy_threshold': 40,
+    'application_delay': 10,
+    'energy_threshold': 60,
 }
 
 new_parameters = {

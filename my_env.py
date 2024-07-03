@@ -363,12 +363,14 @@ class Offloading(gym.Env):
             normalized_energy = total_energy / self.overall_max_energy if self.overall_max_energy != 0 else 0
             # self.reward = -(0.5 * normalized_delay + 0.5 * normalized_energy)
             self.reward = 1.0 
-            # if energy_violation:
-                # self.reward -= 10.0
-                # reward_threshold = 1  # Penalty for energy threshold violation
-            # if delay_violation:
-                # self.reward -= 10.0
-                # reward_threshold = 1
+            if energy_violation:
+                self.reward -= 1.0
+                print("Energy violation")
+                reward_threshold = 1  # Penalty for energy threshold violation
+            if delay_violation:
+                self.reward -= 1.0
+                reward_threshold = 1
+                print("Delay violation")
                 # Penalty for delay threshold violation
 
             # self.reward = self.calculate_reward(delay_weight=0.5, energy_weight=0.5, penalty_weight=1.0, energy_violation=energy_violation, delay_violation=delay_violation)

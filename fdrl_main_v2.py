@@ -31,8 +31,8 @@ T.backends.cudnn.benchmark = False
 
 users = 5
 servers = 3
-federated_rounds = 200
-local_episodes = 100
+federated_rounds = 20
+local_episodes = 1000
 local_episodes_no_fed = 20000
 # Initialize environments
 env1 = my_env.Offloading(users, servers)
@@ -53,8 +53,6 @@ agent2 = dqn_td3_v2.JointAgent(state_dim2, discrete_action_dim2, continuous_acti
 def train_local(agent, env, episodes):
     episode_rewards = []
     for episode in range(episodes):
-        if episode == 5587:
-            print("Episode 5567")
         state = env.reset()
         done = False
         episode_reward = 0
@@ -80,7 +78,7 @@ def train_local(agent, env, episodes):
                 agent.train()
         episode_rewards.append(episode_reward)
         # writer.add_scalar('Local_Reward/Agent', episode_reward, episode)
-        # print(f"Episode {episode} finished with reward: {episode_reward}")
+        print(f"Episode {episode} finished with reward: {episode_reward}")
     return episode_rewards
 
 def federated_averaging(global_agent, agents):
@@ -120,21 +118,21 @@ rewards = []
 local_rewards_agent1 = []
 local_rewards_agent2 = []
 
-reward1_simple_local = train_local(agent1, env1, episodes=local_episodes_no_fed)
-reward2_simple_local = train_local(agent2, env2, episodes=local_episodes_no_fed)
+# reward1_simple_local = train_local(agent1, env1, episodes=local_episodes_no_fed)
+# reward2_simple_local = train_local(agent2, env2, episodes=local_episodes_no_fed)
 
 if not os.path.isdir(text_data_folder):
     os.makedirs(text_data_folder)
 
-file_path = os.path.join(text_data_folder, "reward_local_1.txt")
-file_path = os.path.join(text_data_folder, "reward_local_2.txt")
-with open('reward_local_1.txt', 'w') as file:
-    for reward in reward1_simple_local:
-        file.write(f"{reward}\n")
+# file_path = os.path.join(text_data_folder, "reward_local_1.txt")
+# file_path = os.path.join(text_data_folder, "reward_local_2.txt")
+# with open('reward_local_1.txt', 'w') as file:
+#     for reward in reward1_simple_local:
+#         file.write(f"{reward}\n")
 
-with open('reward_local_2.txt', 'w') as file:
-    for reward in reward2_simple_local:
-        file.write(f"{reward}\n")
+# with open('reward_local_2.txt', 'w') as file:
+#     for reward in reward2_simple_local:
+#         file.write(f"{reward}\n")
 
 for round in range(federated_rounds):   
     print(f"Federated Learning Round {round + 1}")
@@ -171,16 +169,16 @@ with open('rewards.txt', 'w') as file:
     for reward_pair in rewards:
         file.write(f"{reward_pair[0]}, {reward_pair[1]}\n")
 
-# Plotting rewards for both agents during local learning
-plt.figure(figsize=(10, 5))
-plt.plot(reward1_simple_local, label='Agent 1')
-plt.plot(reward2_simple_local, label='Agent 2')
-plt.xlabel('local agent episodes')
-plt.ylabel('rewards')
-plt.title('local agent rewards for both agents without federated learning')
-plt.legend()
-plt.grid(True)
-plt.savefig('local_learning_rewards.png')
+# # Plotting rewards for both agents during local learning
+# plt.figure(figsize=(10, 5))
+# plt.plot(reward1_simple_local, label='Agent 1')
+# plt.plot(reward2_simple_local, label='Agent 2')
+# plt.xlabel('local agent episodes')
+# plt.ylabel('rewards')
+# plt.title('local agent rewards for both agents without federated learning')
+# plt.legend()
+# plt.grid(True)
+# plt.savefig('local_learning_rewards.png')
 
 # Plotting rewards for both agents during local learning
 # plt.figure(figsize=(10, 5))
