@@ -1,9 +1,8 @@
 import gym
 from gym import spaces
 import numpy as np
-
 import math
-
+import torch as T
 np.random.seed(42)
 import random
 from user_info import parameter
@@ -20,14 +19,19 @@ max_energy = []
 max_time = []
 text_data_folder = "./text_data"
 files = glob.glob(os.path.join(text_data_folder, "*.txt"))
-
+device = T.device("cuda" if T.cuda.is_available() else "cpu")
 
 class Offloading(gym.Env):
 
-    def __init__(self, users, servers):
+    def __init__(self, users, servers, dag_type):
         super(Offloading, self).__init__()
         self.average_energy_all_local = None
         self.average_time_all_local = None
+        gnn_input_dim = 2  # Assuming your node features are [computing_circle, data_size]
+        gnn_hidden_dim = 32  # You can adjust this
+        gnn_output_dim = 8  # You can adjust this
+        self.gnn_model = user_info.GNNModel(gnn_input_dim, gnn_hidden_dim, gnn_output_dim).to(device)
+        self.dag_type = dag_type
         # self.very_res_ene = very_res_ene
         # self.very_res_ene_local = very_res_ene_local
         # self.very_res_ene_edge = very_res_ene_edge
@@ -63,7 +67,7 @@ class Offloading(gym.Env):
         self.offloaded_tasks = []
         self.reward_flag = None
         self.start_obs = None
-        self.user_info = user_info.user_info(users)
+        self.user_info = user_info.user_info(users, dag_type=self.dag_type)
         self.device_power_value = None
         self.ter_obs = None
         self.start_energy = 0
@@ -129,13 +133,20 @@ class Offloading(gym.Env):
         # self.discrete_action_space = spaces.Discrete(self.max_task + 1)
         all_combinations = user_info.generate_offloading_combinations(self.edge_servers + 1, self.user_devices)
         self.discrete_action_space = spaces.Discrete(len(all_combinations))
-
-        low_cpu = np.array([0.2] * self.user_devices).astype(np.float32)
+        # Adjust this based on your GNN output size
+        state_size_per_user = 2 + gnn_output_dim  # channel gain, power, and GNN embedding
+        total_state_size = users * state_size_per_user + 1  # +1 for the global offloaded tasks info
+        
+        # Update the observation space
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(total_state_size,), dtype=np.float32
+        )
+        low_cpu = np.array([0.1] * self.user_devices).astype(np.float32)
         high_cpu = np.array([self.max_cpu] * self.user_devices).astype(np.float32)
         self.continuous_action_space = spaces.Box(low=low_cpu, high=high_cpu, dtype=np.float32)
         self.action_space = spaces.Tuple((self.discrete_action_space, self.continuous_action_space))
 
-        self.observation_space = spaces.Box(low, high)
+        # self.observation_space = spaces.Box(low, high)
 
     def sample_combined_action(self):
         discrete_action_space = np.array([self.discrete_action_space.sample() for _ in range(self.user_devices)])
@@ -183,6 +194,7 @@ class Offloading(gym.Env):
         self.completed_task_random = [[] for _ in range(self.user_devices)]
         self.reward_value = 0
         self.offloaded_tasks = []
+        self.user_info = user_info.user_info(self.user_devices, dag_type=self.dag_type)
         self.start_obs = self.start_observe()
 
         self.offloading_time = [[] for _ in range(self.user_devices)]
@@ -211,31 +223,40 @@ class Offloading(gym.Env):
         self.previous_tasks = np.zeros(self.user_devices)
         parameter['residual_power'] = np.zeros(self.user_devices)
         parameter['channel_gain'] = np.zeros(self.user_devices)
+        self.state = []
+
         for i in range(self.user_devices):
             self.channel_gain = np.random.randint(self.min_channel_gain, self.max_channel_gain)
             self.device_power_value = self.max_device_power
             parameter['channel_gain'][i] = self.channel_gain
             parameter['residual_power'][i] = self.device_power_value
-            # self.task_state = np.round(self.user_info[i]['GNN_state'][0].item(), 2)
-            channel_gain_normalized = np.round((self.channel_gain - (-50)) / ((-8) - (-50)), 2)
-            device_power_value_normalized = np.round((self.device_power_value - 0) / (self.max_device_power - 0), 2)
-            self.state.extend([channel_gain_normalized, device_power_value_normalized])  # self.task_state])
-        # Normalize the number of offloaded tasks
-        offloaded_tasks_normalized = np.round((len(self.offloaded_tasks) - 0) / (100 - 0), 2)
-        self.state.extend([offloaded_tasks_normalized])
+
+            # Normalize channel gain and device power
+            channel_gain_normalized = (self.channel_gain - self.min_channel_gain) / (self.max_channel_gain - self.min_channel_gain)
+            device_power_normalized = self.device_power_value / self.max_device_power
+
+            # Get GNN embeddings for the initial DAG state
+            graph_data = self.user_info[i]['graph_data'].to(device)
+            with T.no_grad():
+                gnn_embedding = self.gnn_model(graph_data).mean(dim=0).cpu().numpy()
+
+            # Combine all features
+            device_state = [channel_gain_normalized, device_power_normalized] + gnn_embedding.tolist()
+            self.state.extend(device_state)
+
+        # Normalize the number of offloaded tasks (initially 0)
+        offloaded_tasks_normalized = 0  # At the start, no tasks are offloaded
+        self.state.append(offloaded_tasks_normalized)
 
         self.residual_energy_local = copy.deepcopy(parameter['residual_power'])
         self.residual_energy_edge = copy.deepcopy(parameter['residual_power'])
         self.residual_energy_random = copy.deepcopy(parameter['residual_power'])
-        # self.very_res_ene.append(sum(parameter['residual_power'])/self.user_devices)
-        # self.very_res_ene_local.append(sum(self.residual_energy_local)/self.user_devices)
-        # self.very_res_ene_edge.append(sum(self.residual_energy_edge)/self.user_devices)
-        # self.very_res_ene_random.append(sum(self.residual_energy_random)/self.user_devices)
-        return self.state
 
-    def step(self, t, action, user_info):
-        for j in user_info:
-            task = user_info[j]['tasks_in_DAG'][t]
+        return np.array(self.state, dtype=np.float32)
+
+    def step(self, t, action):
+        for j in self.user_info:
+            task = self.user_info[j]['tasks_in_DAG'][t]
             self.current_task.append(task)
 
         offload_decision, allocation_check, previous_task, cpu_resource_allocations = self.action_taken(action)
@@ -256,7 +277,6 @@ class Offloading(gym.Env):
         return next_state, self.reward, done, reward_threshold
 
     def action_taken(self, action):
-        # action = [0, 0, 1, 2, 0, 0.0, 3.9092055470421616e-16, 0.9990487694740295, 1.0013156276356128e-10, 1.0]
         value = []
         self.resources = []
         mid = len(action) // 2
@@ -314,9 +334,9 @@ class Offloading(gym.Env):
 
         if not os.path.isdir(text_data_folder):
             os.makedirs(text_data_folder)
-        file_path = os.path.join(text_data_folder, "offload_decsion.txt")            
+        file_path = os.path.join(text_data_folder, "offload_decsion.txt")
         with open(file_path, 'a') as f:
-            f.write(f"offload_decsion :  {np.round(action, 2 )},\n")
+            f.write(f"offload_decsion :  {np.round(action, 2)},\n")
         return value, self.allocation_check, self.completed_task, cpu_resource_allocations
 
     def update_max_values(self):
@@ -326,54 +346,114 @@ class Offloading(gym.Env):
         for sublist in self.task_energy_consumption:
             self.max_energy = max(self.max_energy, max(sublist, default=0))
 
+    def calculate_reward(self, delay_weight, energy_weight, penalty_weight, energy_violation, delay_violation):
+        # Normalize delays and energies using dynamically tracked max values
+        normalized_delays = [delay / self.max_delay for sublist in self.task_time for delay in sublist]
+        normalized_energies = [energy / self.max_energy for sublist in self.task_energy_consumption for energy in
+                               sublist]
+
+        # Calculate average normalized delay and energy
+        average_normalized_delay = sum(normalized_delays) / len(normalized_delays)
+        average_normalized_energy = sum(normalized_energies) / len(normalized_energies)
+
+        # Initialize reward
+        reward = 0.0
+
+        # Penalize for delay and energy
+        reward -= (delay_weight * average_normalized_delay + energy_weight * average_normalized_energy)
+
+        # Add penalties for violations
+        if energy_violation:
+            reward -= penalty_weight * 10  # Arbitrary penalty value for energy violation
+        if delay_violation:
+            reward -= penalty_weight * 10  # Arbitrary penalty value for delay violation
+
+        return reward
+
+    def calculate_reward1(self, users_data, global_resource_usage, global_resource_capacity):
+
+        total_reward = 0
+
+        # 1. Progress Reward
+        for user in users_data:
+            progress = user['completed_tasks'] / user['total_tasks']
+            total_reward += progress
+
+        # 2. Delay Penalty
+        max_makespan = max(user['current_makespan'] for user in users_data)
+        delay_penalty = self.w2 * max_makespan
+        total_reward -= delay_penalty
+
+        # 3. Energy Penalty
+        total_energy = sum(user['energy_consumed'] for user in users_data)
+        energy_penalty = self.w3 * total_energy
+        total_reward -= energy_penalty
+
+        # 4. Resource Utilization Penalty
+        resource_utilization = global_resource_usage / global_resource_capacity
+        resource_penalty = self.w4 * abs(0.8 - resource_utilization)  # Assuming 80% utilization is ideal
+        total_reward -= resource_penalty
+
+        # 5. Constraint Violations Penalties
+        for user in users_data:
+            # Energy constraint
+            energy_violation = max(0, user['energy_consumed'] - user['energy_threshold'])
+            total_reward -= self.alpha * (energy_violation / user['energy_threshold'])
+
+            # Delay constraint
+            delay_violation = max(0, user['current_makespan'] - user['deadline'])
+            total_reward -= self.beta * (delay_violation / user['deadline'])
+
+            # Resource constraint (per user)
+            resource_violation = max(0, user['resource_usage'] - 1.0)  # Resource usage should not exceed 100%
+            total_reward -= self.gamma * resource_violation
+
+        return total_reward
+
     def evaluate(self, t, offloading_decision, allocation_check, previous_task):
-        # resource_violation = any(np.sum(each_list) > 1 for each_list in allocation_check)
-        resource_violation = any(np.sum(each_list) > 1 or (len(each_list) > 0 and np.all(np.array(each_list) <= 0)) for each_list in allocation_check)
+        for i in range(len(self.current_task)):
+            decision_variable = offloading_decision[i]
+            energy_consumed = self.energy_consumption(i, t, decision_variable, previous_task, self.resources)
+            if parameter['residual_power'][i] > 0:
+                parameter['residual_power'][i] -= energy_consumed
+            else:
+                parameter['residual_power'][i] = 0
+            delay_calculated, offloading_time = self.delay_calculation(i, t, decision_variable, previous_task,
+                                                                       self.task_time, self.resources)
+            self.task_energy_consumption[i].append(energy_consumed)
+            self.task_time[i].append(delay_calculated)
+            self.offloading_time[i].append(offloading_time)
+
+        energy_values = self.check_device_energy(parameter['residual_power'])
+        energy_violation = (energy_values < parameter['energy_threshold']).any()
+        delay_violation = any(max(sublist) > parameter['application_delay'] for sublist in self.task_time)
+        resource_violation = any(np.sum(each_list) > 1 for each_list in allocation_check)
+        # Update maximum observed values
+        # self.update_max_values()
+        reward_threshold = 0
+        total_delay = np.sum(self.task_time)
+        total_energy = np.sum(self.task_energy_consumption)
+
+        self.overall_max_delay = max(self.overall_max_delay, total_delay)
+        self.overall_max_energy = max(self.overall_max_energy, total_energy)
+
+        normalized_delay = total_delay / self.overall_max_delay if self.overall_max_delay != 0 else 0
+        normalized_energy = total_energy / self.overall_max_energy if self.overall_max_energy != 0 else 0
+        self.reward = -(0.5 * normalized_delay + 0.5 * normalized_energy)
+        self.reward = self.reward * 0.1  # Scale down the reward
         if resource_violation:
-            self.reward = -1.0
+            self.reward -= 10.0
             reward_threshold = 1
-        else:
-            for i in range(len(self.current_task)):
-                decision_variable = offloading_decision[i]
-                energy_consumed = self.energy_consumption(i, t, decision_variable, previous_task, self.resources)
-                if parameter['residual_power'][i] > 0:
-                    parameter['residual_power'][i] -= energy_consumed
-                else:
-                    parameter['residual_power'][i] = 0
-                delay_calculated, offloading_time = self.delay_calculation(i, t, decision_variable, previous_task,
-                                                                        self.task_time, self.resources)
-                self.task_energy_consumption[i].append(energy_consumed)
-                self.task_time[i].append(delay_calculated)
-                self.offloading_time[i].append(offloading_time)
+        if energy_violation:
+            self.reward -= 10.0
+            reward_threshold = 1  # Penalty for energy threshold violation
+        if delay_violation:
+            self.reward -= 10.0
+            reward_threshold = 1
+            # Penalty for delay threshold violation
 
-            energy_values = self.check_device_energy(parameter['residual_power'])
-            energy_violation = (energy_values < parameter['energy_threshold']).any()
-            delay_violation = any(max(sublist) > parameter['application_delay'] for sublist in self.task_time)
-            resource_violation = any(np.sum(each_list) > 1 for each_list in allocation_check)
-            # Update maximum observed values
-            # self.update_max_values()
-            reward_threshold = 0
-            total_delay = np.sum(self.task_time)
-            total_energy = np.sum(self.task_energy_consumption)
-
-            self.overall_max_delay = max(self.overall_max_delay, total_delay)
-            self.overall_max_energy = max(self.overall_max_energy, total_energy)
-
-            normalized_delay = total_delay / self.overall_max_delay if self.overall_max_delay != 0 else 0
-            normalized_energy = total_energy / self.overall_max_energy if self.overall_max_energy != 0 else 0
-            # self.reward = -(0.5 * normalized_delay + 0.5 * normalized_energy)
-            self.reward = 1.0 
-            if energy_violation:
-                self.reward -= 1.0
-                print("Energy violation")
-                reward_threshold = 1  # Penalty for energy threshold violation
-            if delay_violation:
-                self.reward -= 1.0
-                reward_threshold = 1
-                print("Delay violation")
-                # Penalty for delay threshold violation
-
-            # self.reward = self.calculate_reward(delay_weight=0.5, energy_weight=0.5, penalty_weight=1.0, energy_violation=energy_violation, delay_violation=delay_violation)
+        # self.reward = self.calculate_reward(delay_weight=0.5, energy_weight=0.5, penalty_weight=1.0,
+        #                                     energy_violation=energy_violation, delay_violation=delay_violation)
 
         return self.reward, reward_threshold, self.resources
 
@@ -606,31 +686,58 @@ class Offloading(gym.Env):
                 self.residual_energy_edge, self.residual_energy_random, self.average_transmission_time,
                 self.average_transmission_time_l, self.average_transmission_time_e, self.average_transmission_time_r)
 
+    # def observe(self, t):
+    #     self.very_next_state = []
+    #     parameter['channel_gain'] = np.zeros(self.user_devices)
+    #     for i in range(self.user_devices):
+    #         self.channel_gain = np.random.randint(self.min_channel_gain, self.max_channel_gain)
+    #         self.device_power_value = parameter['residual_power'][i]
+    #         # self.task_state = np.round(self.user_info[i]['GNN_state'][t].item(), 2)
+    #         parameter['channel_gain'][i] = self.channel_gain
+    #         # Normalize the channel gain
+    #         channel_gain_normalized = np.round((self.channel_gain - (-50)) / ((-8) - (-50)), 2)
+    #         # Normalize the device power value
+    #         device_power_value_normalized = np.round((self.device_power_value - 0) / (self.max_device_power - 0), 2)
+
+    #         self.very_next_state.extend([channel_gain_normalized, device_power_value_normalized])  # self.task_state])
+
+    #     # Normalize the number of offloaded tasks
+    #     offloaded_tasks_normalized = np.round((len(self.offloaded_tasks) - 0) / (100 - 0), 2)
+
+    #     self.very_next_state.extend([offloaded_tasks_normalized])
+    #     return self.very_next_state
     def observe(self, t):
         self.very_next_state = []
-        parameter['channel_gain'] = np.zeros(self.user_devices)
         for i in range(self.user_devices):
-            self.channel_gain = np.random.randint(self.min_channel_gain, self.max_channel_gain)
-            self.device_power_value = parameter['residual_power'][i]
-            # self.task_state = np.round(self.user_info[i]['GNN_state'][t].item(), 2)
-            parameter['channel_gain'][i] = self.channel_gain
-            # Normalize the channel gain
-            channel_gain_normalized = np.round((self.channel_gain - (-50)) / ((-8) - (-50)), 2)
-            # Normalize the device power value
-            device_power_value_normalized = np.round((self.device_power_value - 0) / (self.max_device_power - 0), 2)
+            # Original state features
+            channel_gain = parameter['channel_gain'][i]
+            device_power = parameter['residual_power'][i]
+            
+            # Normalize these features
+            channel_gain_normalized = (channel_gain - self.min_channel_gain) / (self.max_channel_gain - self.min_channel_gain)
+            device_power_normalized = device_power / self.max_device_power
+            
+            # Get graph data for this device
+            graph_data = self.user_info[i]['graph_data'].to(device)
+            
+            # Get GNN embeddings
+            with T.no_grad():
+                gnn_embedding = self.gnn_model(graph_data).mean(dim=0).cpu().numpy()
+            
+            # Combine all features
+            device_state = [channel_gain_normalized, device_power_normalized] + gnn_embedding.tolist()
+            self.very_next_state.extend(device_state)
 
-            self.very_next_state.extend([channel_gain_normalized, device_power_value_normalized])  # self.task_state])
+        # Add global state information
+        offloaded_tasks_normalized = len(self.offloaded_tasks) / parameter['all_tasks']
+        self.very_next_state.append(offloaded_tasks_normalized)
 
-        # Normalize the number of offloaded tasks
-        offloaded_tasks_normalized = np.round((len(self.offloaded_tasks) - 0) / (100 - 0), 2)
-
-        self.very_next_state.extend([offloaded_tasks_normalized])
-        return self.very_next_state
+        return np.array(self.very_next_state)
 
     def is_done(self):
         if len(self.offloaded_tasks) == parameter['all_tasks']:
             # print("All Offloaded")
-            self.reward = 1
+            # self.reward = 100
             return self.reward, True
         return self.reward, False
 
@@ -650,12 +757,12 @@ class Offloading(gym.Env):
 
     def offloading_transmission_time(self, output, data_rate_uplink):  # output
         uplink_transmission_time = ((
-                                                output * 8) / data_rate_uplink)  # here the data is in bytes so convert to bits and datarate is in Mbps
+                                            output * 8) / data_rate_uplink)  # here the data is in bytes so convert to bits and datarate is in Mbps
         return uplink_transmission_time  # output is seconds
 
     def downloading_transmission_time(self, output, data_rate_downlink):
         downlink_transmission_time = ((
-                                                  output * 8) / data_rate_downlink)  # here the data is in bytes so convert to bits and datarate is in Mbps
+                                              output * 8) / data_rate_downlink)  # here the data is in bytes so convert to bits and datarate is in Mbps
         return downlink_transmission_time  # output is seconds
 
     def downlink_transmission_energy(self, p, downlink_transmission_time):

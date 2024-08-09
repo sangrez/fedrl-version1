@@ -1,14 +1,16 @@
-# from global_variables import *
 import networkx as nx
 import numpy as np
 from scipy.linalg import fractional_matrix_power
 import pickle
 import itertools
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+from torch_geometric.data import Data
+
 np.random.seed(42)
 
-with open('data_list/task_list.pickle', 'rb') as f:
-    task_list = pickle.load(f)
 t = 0
 PRE = 0
 k = 0
@@ -40,86 +42,103 @@ parameter = {
     "k": 1.25 * 10 ** -26,
     "uplink_power": 0.2,  # the maximum transmit power of the mobile device
     "downlink_power" : 0.2,
-    # "h": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],  # Channel gain
     "I": 1.5e-8,  # Noise power
     "maxReward": 4000,
     "total_power": 10000,
     "power_percentage": 0.75,
     "W": 2 * 10 ** 3,  # bandwidth 2MHZ
     "downlink_bandwidth" : 2 * 10 * 4,
-    
     "uplink_datarate": 3 * 10 **6,  # 3Mbps
     "downlink_datarate": 3 * 10 **6, # 3Mbps
     "sigma": 10 ** (-5),  # noise power
     'new_adj': new_adj,
     'start': 0,
-    'application_delay': 10,
+    'application_delay': 1,
     'energy_threshold': 60,
 }
 
 new_parameters = {
-
     "datasize" : 10000,  # bits
     "workload" : 50000
 }
 
+def load_dag_dataset(dag_type, split='train'):
+    with open(f'data_list/task_list_{dag_type}_{split}.pickle', 'rb') as f:
+        return pickle.load(f)
+
+# Load datasets for each DAG type and split
+linear_dags_train = load_dag_dataset('linear', 'train')
+branching_dags_train = load_dag_dataset('branching', 'train')
+mixed_dags_train = load_dag_dataset('mixed', 'train')
+
+linear_dags_val = load_dag_dataset('linear', 'val')
+branching_dags_val = load_dag_dataset('branching', 'val')
+mixed_dags_val = load_dag_dataset('mixed', 'val')
 
 def DAG_features(task_list, k):
     # Extract the specific DAG
-    
     G = task_list[k]
     adj_matrix = nx.to_numpy_array(G, nodelist=sorted(G.nodes()))
     feature_matrix = np.array([[G.nodes[i]['computing_circle'], G.nodes[i]['data_size']] for i in G.nodes()])
     new_adj = {i: np.where(adj_matrix[:, i] == 1)[0].tolist() for i in range(adj_matrix.shape[1])}
-    workload  = (feature_matrix[:, 0] ).tolist()
-    data  = (feature_matrix[:, 1]  ).tolist()
-    I = np.identity(adj_matrix.shape[0])
-    A_hat = adj_matrix + I
-    D = np.diag(A_hat.sum(axis=1))
-    D_half_norm = fractional_matrix_power(D, -0.5)
+    workload = feature_matrix[:, 0].tolist()
+    data = feature_matrix[:, 1].tolist()
 
-    def relu(x):
-        return np.maximum(0, x)
+    # Convert to PyTorch tensors
+    edge_index = torch.tensor(np.array(np.nonzero(adj_matrix)), dtype=torch.long)
+    x = torch.tensor(feature_matrix, dtype=torch.float)
 
-    def gcn(A, H, W):
-        A_hat_local = A + np.identity(A.shape[0])
-        D_local = np.diag(A_hat_local.sum(axis=0))
-        D_half_norm_local = fractional_matrix_power(D_local, -0.5)
-        return relu(D_half_norm_local.dot(A_hat_local).dot(D_half_norm_local).dot(H).dot(W))
+    # Create a PyTorch Geometric Data object
+    graph_data = Data(x=x, edge_index=edge_index)
 
-    np.random.seed(77777)
-    n_h = 4  # number of neurons in the hidden layer
-    W0 = np.random.randn(feature_matrix.shape[1], n_h) * 0.01
-    W1 = np.random.randn(n_h, 1) * 0.01
+    return len(G.nodes()), new_adj, list(G.nodes()), data, workload, graph_data
 
-    # Compute GCN states
-    H1 = gcn(adj_matrix, feature_matrix, W0)
-    GNN_state = gcn(adj_matrix, H1, W1)
+class GNNModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(GNNModel, self).__init__()
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, output_dim)
 
-    return len(G.nodes()), new_adj, list(G.nodes()), data, workload, GNN_state
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.relu(self.conv1(x, edge_index))
+        x = self.conv2(x, edge_index)
+        return x
 
-def user_info(users): 
+def user_info(users, dag_type='mixed', split='train'):
+    if split == 'train':
+        if dag_type == 'linear':
+            task_list = linear_dags_train
+        elif dag_type == 'branching':
+            task_list = branching_dags_train
+        else:
+            task_list = mixed_dags_train
+    else:  # validation
+        if dag_type == 'linear':
+            task_list = linear_dags_val
+        elif dag_type == 'branching':
+            task_list = branching_dags_val
+        else:
+            task_list = mixed_dags_val
 
-    user_info = {}  # Initialize an empty dictionary to store user information
-    # Iterate over the number of users (5 in this case)
+    user_info = {}
     for user_index in range(users):
-        total_tasks, new_adj, tasks_in_DAG, data, workload, GNN_state = DAG_features(task_list, k)
-
-        # Store the information for the current user in the dictionary
+        k = np.random.randint(0, len(task_list))
+        total_tasks, new_adj, tasks_in_DAG, data, workload, graph_data = DAG_features(task_list, k)
         user_info[user_index] = {
             'total_tasks': total_tasks,
             'new_adj': new_adj,
             'tasks_in_DAG': tasks_in_DAG,
             'data': data,
             'workload': workload,
-            'GNN_state': GNN_state
+            'graph_data': graph_data
         }
 
     first_tasks = []
-    total_task_count = 0  # Initialize the total_task_count variable
+    total_task_count = 0
 
     for user_index in user_info:
-        first_task = user_info[user_index]['tasks_in_DAG'][t]
+        first_task = user_info[user_index]['tasks_in_DAG'][0]  # Assuming t=0 for the first task
         first_tasks.append(first_task)
         total_task_count += user_info[user_index]['total_tasks']
 
@@ -135,7 +154,6 @@ def user_info(users):
     return user_info
 
 def generate_offloading_combinations(num_servers, num_users):
-
     # Define possible offloading locations for each task as integers
     offload_locations = list(range(num_servers))
 
@@ -146,3 +164,26 @@ def generate_offloading_combinations(num_servers, num_users):
     action_map = {i: combination for i, combination in enumerate(all_combinations)}
     
     return action_map
+
+# if __name__ == "__main__":
+#     # This block can be used for testing or demonstrating the functionality
+#     test_users = 3
+#     test_dag_type = 'mixed'
+#     test_split = 'train'
+
+#     test_user_info = user_info(test_users, test_dag_type, test_split)
+#     print(f"Generated user info for {test_users} users with {test_dag_type} DAG type ({test_split} split):")
+#     for user, info in test_user_info.items():
+#         print(f"User {user}:")
+#         print(f"  Total tasks: {info['total_tasks']}")
+#         print(f"  First task: {info['tasks_in_DAG'][0]}")
+#         print(f"  Data size of first task: {info['data'][0]:.2f}")
+#         print(f"  Workload of first task: {info['workload'][0]:.2f}")
+#         print(f"  Graph data shape: {info['graph_data'].x.shape}")
+
+#     test_servers = 2
+#     test_combinations = generate_offloading_combinations(test_servers, test_users)
+#     print(f"\nGenerated offloading combinations for {test_users} users and {test_servers} servers:")
+#     for action, combination in list(test_combinations.items())[:5]:  # Print first 5 combinations
+#         print(f"Action {action}: {combination}")
+#     print(f"Total combinations: {len(test_combinations)}")

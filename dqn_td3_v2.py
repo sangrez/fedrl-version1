@@ -134,13 +134,14 @@ class TD3(object):
         self.total_it = 0
 
     def select_action(self, state):
-        state = T.FloatTensor(state.reshape(1, -1)).to(device)
+        state = T.FloatTensor(state.reshape(1, -1))
+        state = state.to(device)
         return self.actor(state).cpu().data.numpy().flatten()
 
     def train(self, replay_buffer, batch_size=256):
         self.total_it += 1
 
-        # Sample replay buffer
+        # Sample replay buffer 
         state, action, next_state, reward, done = replay_buffer.sample(batch_size)
 
         state = T.FloatTensor(state).to(device)
@@ -168,9 +169,10 @@ class TD3(object):
         critic_loss.backward()
         self.critic_optimizer.step()
 
+        actor_loss = None
         if self.total_it % self.policy_freq == 0:
-            actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
 
+            actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
@@ -180,6 +182,8 @@ class TD3(object):
 
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+        return critic_loss.item() + (actor_loss.item() if actor_loss is not None else 0)
 
     def save(self, filename):
         T.save(self.actor.state_dict(), filename + "_actor")
@@ -193,7 +197,7 @@ class TD3(object):
 
 class JointAgent:
     def __init__(self, state_dim, discrete_action_dim, continuous_action_dim, max_action):
-        self.dqn = DeepQNetwork(lr=1e-3, input_dims=[state_dim], fc1_dims=256, fc2_dims=256, n_actions=discrete_action_dim)
+        self.dqn = DeepQNetwork(lr=3e-4, input_dims=[state_dim], fc1_dims=256, fc2_dims=256, n_actions=discrete_action_dim)
         self.dqn_target = copy.deepcopy(self.dqn)
         self.td3 = TD3(state_dim, continuous_action_dim, max_action)
         self.replay_buffer = ReplayBuffer()
@@ -202,17 +206,32 @@ class JointAgent:
         self.tau = 0.005
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.999
+        self.training = True
+
+    def train(self):
+        self.training = True
+        self.dqn.train()
+        self.td3.actor.train()
+        self.td3.critic.train()
+
+    def eval(self):
+        self.training = False
+        self.dqn.eval()
+        self.td3.actor.eval()
+        self.td3.critic.eval()
 
     def select_action(self, state, random_action=False):
-        state = T.FloatTensor(state).unsqueeze(0).to(device)
-        if random_action or np.random.random() < self.epsilon:
+        state = T.FloatTensor(state).unsqueeze(0)
+        if self.training and (random_action or np.random.random() < self.epsilon):
             discrete_action = np.random.randint(self.dqn.n_actions)
         else:
+            state = state.to(device)
             discrete_action = self.dqn.forward(state).argmax().item()
+        
         continuous_action = self.td3.select_action(state.cpu().numpy())
         return discrete_action, continuous_action
-
+    
     def add_transition(self, state, discrete_action, continuous_action, next_state, reward, done):
         discrete_action = np.array([discrete_action], dtype=np.float32)
         action = np.concatenate((discrete_action, continuous_action))
@@ -238,6 +257,7 @@ class JointAgent:
 
             self.dqn.optimizer.zero_grad()
             dqn_loss.backward()
+            nn.utils.clip_grad_norm_(self.dqn.parameters(), max_norm=1.0)
             self.dqn.optimizer.step()
 
             # Update target network
@@ -245,11 +265,15 @@ class JointAgent:
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             # Train TD3
-            self.td3.train(self.replay_buffer, batch_size=256)
+            td3_loss = self.td3.train(self.replay_buffer, batch_size=256)
 
-        # Decay epsilon
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            # Decay epsilon
+            if self.epsilon > self.epsilon_min:
+                self.epsilon *= self.epsilon_decay
+
+            return dqn_loss.item() + td3_loss
+
+        return 0.0  # Return 0.0 if no training occurred
 
     def get_weights(self):
         return {
@@ -266,5 +290,3 @@ class JointAgent:
         self.td3.actor.load_state_dict(weights['actor'])
         self.td3.critic.load_state_dict(weights['critic'])
         self.td3.critic_target.load_state_dict(weights['critic_target'])
-        self.td3.actor_target = copy.deepcopy(self.td3.actor)
-        self.td3.critic_target = copy.deepcopy(self.td3.critic)
