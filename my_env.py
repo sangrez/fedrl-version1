@@ -23,7 +23,7 @@ device = T.device("cuda" if T.cuda.is_available() else "cpu")
 
 class Offloading(gym.Env):
 
-    def __init__(self, users, servers, dag_type):
+    def __init__(self, users, servers, dag_type, split='train'):
         super(Offloading, self).__init__()
         self.average_energy_all_local = None
         self.average_time_all_local = None
@@ -32,6 +32,8 @@ class Offloading(gym.Env):
         gnn_output_dim = 8  # You can adjust this
         self.gnn_model = user_info.GNNModel(gnn_input_dim, gnn_hidden_dim, gnn_output_dim).to(device)
         self.dag_type = dag_type
+        self.split = split
+        # self.user_info = user_info
         # self.very_res_ene = very_res_ene
         # self.very_res_ene_local = very_res_ene_local
         # self.very_res_ene_edge = very_res_ene_edge
@@ -67,7 +69,7 @@ class Offloading(gym.Env):
         self.offloaded_tasks = []
         self.reward_flag = None
         self.start_obs = None
-        self.user_info = user_info.user_info(users, dag_type=self.dag_type)
+        self.user_info = user_info.user_info(users, dag_type=self.dag_type, split=self.split)
         self.device_power_value = None
         self.ter_obs = None
         self.start_energy = 0
@@ -194,7 +196,7 @@ class Offloading(gym.Env):
         self.completed_task_random = [[] for _ in range(self.user_devices)]
         self.reward_value = 0
         self.offloaded_tasks = []
-        self.user_info = user_info.user_info(self.user_devices, dag_type=self.dag_type)
+        self.user_info = user_info.user_info(self.user_devices, dag_type=self.dag_type, split=self.split)
         self.start_obs = self.start_observe()
 
         self.offloading_time = [[] for _ in range(self.user_devices)]
@@ -334,9 +336,9 @@ class Offloading(gym.Env):
 
         if not os.path.isdir(text_data_folder):
             os.makedirs(text_data_folder)
-        file_path = os.path.join(text_data_folder, "offload_decsion.txt")
-        with open(file_path, 'a') as f:
-            f.write(f"offload_decsion :  {np.round(action, 2)},\n")
+        # file_path = os.path.join(text_data_folder, "offload_decsion.txt")
+        # with open(file_path, 'a') as f:
+        #     f.write(f"offload_decsion :  {np.round(action, 2)},\n")
         return value, self.allocation_check, self.completed_task, cpu_resource_allocations
 
     def update_max_values(self):

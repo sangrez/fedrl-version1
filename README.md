@@ -8,17 +8,3 @@ Things to do:
 6) compare without Fed learning
 
 
-Statistics:
-Linear DAG statistics:
-  Training set size: 4021
-  Validation set size: 979
-
-Branching DAG statistics:
-  Training set size: 3990
-  Validation set size: 1010
-
-Mixed DAG statistics:
-  Training set size: 3992
-  Validation set size: 1008
-
-Validation episodes = 100

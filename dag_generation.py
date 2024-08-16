@@ -17,27 +17,27 @@ def create_task(task_num, data_size_min, data_size_max, workload_min, workload_m
     # Create edges based on DAG type
     if dag_type == 'linear':
         for i in range(task_num - 1):
-            G.add_edge(i, i+1)
+            G.add_edge(i, i+1, weight=1)
     
     elif dag_type == 'branching':
-        G.add_edge(0, 1)
+        G.add_edge(0, 1, weight=1)
         for i in range(1, task_num - 1):
             child1 = min(i + 1, task_num - 1)
             child2 = min(i + 2, task_num - 1)
-            G.add_edge(i, child1)
+            G.add_edge(i, child1, weight=1)
             if child1 != child2:
-                G.add_edge(i, child2)
+                G.add_edge(i, child2, weight=1)
     
     elif dag_type == 'mixed':
         # Start with a linear backbone
         for i in range(task_num - 1):
-            G.add_edge(i, i+1)
+            G.add_edge(i, i+1, weight=1)
         
         # Add some random branches
         for i in range(1, task_num - 2):
             if random.random() < 0.3:  # 30% chance to add a branch
                 target = random.randint(i+2, task_num-1)
-                G.add_edge(i, target)
+                G.add_edge(i, target, weight=1)
 
     return G
 
@@ -50,8 +50,20 @@ def visualize_dag(G, filename):
     plt.savefig(filename)
     plt.close()
 
-def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag_types, train_ratio=0.8):
-    datasets = {dag_type: {'train': [], 'val': []} for dag_type in dag_types}
+def split_train_test(datasets, train_ratio=0.8):
+    train_datasets = {dag_type: [] for dag_type in datasets.keys()}
+    test_datasets = {dag_type: [] for dag_type in datasets.keys()}
+    
+    for dag_type, dags in datasets.items():
+        random.shuffle(dags)
+        split_index = int(len(dags) * train_ratio)
+        train_datasets[dag_type] = dags[:split_index]
+        test_datasets[dag_type] = dags[split_index:]
+    
+    return train_datasets, test_datasets
+
+def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag_types):
+    datasets = {dag_type: [] for dag_type in dag_types}
     
     for _ in range(num_dags):
         for dag_type in dag_types:
@@ -63,55 +75,45 @@ def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag
                 workload_max=workload_range[1],
                 dag_type=dag_type
             )
-            if random.random() < train_ratio:
-                datasets[dag_type]['train'].append(G)
-            else:
-                datasets[dag_type]['val'].append(G)
+            datasets[dag_type].append(G)
     
     return datasets
 
 if __name__ == '__main__':
     # Configuration
-    NUM_DAGS = 5000
-    TASK_NUM = 7  # Fixed number of tasks
+    NUM_DAGS = 1000  # Increased for better split
+    TASK_NUM = 10  # Number of tasks between start and end
     DATA_SIZE_RANGE = (25, 50)  # KB
     WORKLOAD_RANGE = (100, 500)  # Million instructions
-    DAG_TYPES = ['linear', 'branching', 'mixed']
-    TRAIN_RATIO = 0.8
+    DAG_TYPES = ['linear', 'branching', 'mixed', 'grid', 'fork-join', 'star', 'tree', 'cycle-free-mesh']
+    TRAIN_RATIO = 0.8  # 80% for training, 20% for testing
 
     # Create datasets
-    datasets = create_dag_datasets(NUM_DAGS, TASK_NUM, DATA_SIZE_RANGE, WORKLOAD_RANGE, DAG_TYPES, TRAIN_RATIO)
+    datasets = create_dag_datasets(NUM_DAGS, TASK_NUM, DATA_SIZE_RANGE, WORKLOAD_RANGE, DAG_TYPES)
+
+    # Split into train and test sets
+    train_datasets, test_datasets = split_train_test(datasets, TRAIN_RATIO)
 
     # Create folders
-    for folder in ['DAGs', 'data_list']:
+    for folder in ['DAGs', 'data_list/train', 'data_list/test']:
         os.makedirs(folder, exist_ok=True)
 
     # Save datasets and visualize some examples
-    for dag_type, split_data in datasets.items():
-        for split in ['train', 'val']:
-            # Save dataset
-            with open(f'data_list/task_list_{dag_type}_{split}.pickle', 'wb') as f:
-                pickle.dump(split_data[split], f)
-        
-        # Visualize a few examples from the training set
-        for i in range(5):  # Visualize 5 examples of each type
-            if i < len(split_data['train']):
-                visualize_dag(split_data['train'][i], f"DAGs/task_graph_{dag_type}_{i}.png")
-
-    print(f"Created {NUM_DAGS} DAGs of each type: {', '.join(DAG_TYPES)}")
-    print(f"Each DAG has exactly {TASK_NUM} tasks")
-    print(f"Split into {TRAIN_RATIO*100}% train and {(1-TRAIN_RATIO)*100}% validation")
-    print("Datasets saved in 'data_list' folder")
-    print("Example visualizations saved in 'DAGs' folder")
-
-    # Print dataset statistics
     for dag_type in DAG_TYPES:
-        print(f"\n{dag_type.capitalize()} DAG statistics:")
-        print(f"  Training set size: {len(datasets[dag_type]['train'])}")
-        print(f"  Validation set size: {len(datasets[dag_type]['val'])}")
+        # Save train dataset
+        with open(f'data_list/train/task_list_{dag_type}.pickle', 'wb') as f:
+            pickle.dump(train_datasets[dag_type], f)
+        
+        # Save test dataset
+        with open(f'data_list/test/task_list_{dag_type}.pickle', 'wb') as f:
+            pickle.dump(test_datasets[dag_type], f)
+        
+        # Visualize a few examples (from training set)
+        for i in range(5):  # Visualize 5 examples of each type
+            visualize_dag(train_datasets[dag_type][i], f"DAGs/task_graph_{dag_type}_{i}.png")
 
-        # Calculate average number of edges
-        train_avg_edges = np.mean([len(G.edges()) for G in datasets[dag_type]['train']])
-        val_avg_edges = np.mean([len(G.edges()) for G in datasets[dag_type]['val']])
-        print(f"  Average number of edges (train): {train_avg_edges:.2f}")
-        print(f"  Average number of edges (val): {val_avg_edges:.2f}")
+    print(f"Created and split {NUM_DAGS} DAGs of each type: {', '.join(DAG_TYPES)}")
+    print(f"Train-Test split ratio: {TRAIN_RATIO:.0%}-{1-TRAIN_RATIO:.0%}")
+    print("Training datasets saved in 'data_list/train' folder")
+    print("Test datasets saved in 'data_list/test' folder")
+    print("Example visualizations (from training set) saved in 'DAGs' folder")

@@ -147,24 +147,16 @@ def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag
     
     return datasets
 
-
-def split_train_test(datasets, train_ratio=0.8):
-    train_datasets = {dag_type: [] for dag_type in datasets.keys()}
-    test_datasets = {dag_type: [] for dag_type in datasets.keys()}
+def create_and_split_dag_datasets(num_dags, task_num, data_ranges, dag_types, train_ratio=0.8):
+    all_datasets = {dag_type: [] for dag_type in dag_types}
+    train_datasets = {dag_type: [] for dag_type in dag_types}
+    test_dataset = []
     
-    for dag_type, dags in datasets.items():
-        random.shuffle(dags)
-        split_index = int(len(dags) * train_ratio)
-        train_datasets[dag_type] = dags[:split_index]
-        test_datasets[dag_type] = dags[split_index:]
-    
-    return train_datasets, test_datasets
-
-def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag_types):
-    datasets = {dag_type: [] for dag_type in dag_types}
-    
-    for _ in range(num_dags):
-        for dag_type in dag_types:
+    # Create datasets for each type with specific ranges
+    for dag_type in dag_types:
+        data_size_range = data_ranges[dag_type]['data_size_range']
+        workload_range = data_ranges[dag_type]['workload_range']
+        for _ in range(num_dags):
             G = create_task(
                 task_num=task_num,
                 data_size_min=data_size_range[0],
@@ -173,24 +165,42 @@ def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag
                 workload_max=workload_range[1],
                 dag_type=dag_type
             )
-            datasets[dag_type].append(G)
+            all_datasets[dag_type].append(G)
     
-    return datasets
+    # Split into train and test
+    for dag_type, dags in all_datasets.items():
+        random.shuffle(dags)
+        split_index = int(len(dags) * train_ratio)
+        train_datasets[dag_type] = dags[:split_index]
+        test_dataset.extend(dags[split_index:])
+    
+    # Shuffle the test dataset to mix DAG types
+    random.shuffle(test_dataset)
+    
+    return train_datasets, test_dataset
 
 if __name__ == '__main__':
     # Configuration
-    NUM_DAGS = 100  # Increased for better split
+    NUM_DAGS = 125  # Number of DAGs per type (100 for train, 25 for test)
     TASK_NUM = 6  # Number of tasks between start and end
-    DATA_SIZE_RANGE = (25, 50)  # KB
-    WORKLOAD_RANGE = (100, 500)  # Million instructions
-    DAG_TYPES = ['linear', 'branching', 'mixed', 'grid', 'fork-join', 'star', 'tree', 'cycle-free-mesh']
     TRAIN_RATIO = 0.8  # 80% for training, 20% for testing
 
-    # Create datasets
-    datasets = create_dag_datasets(NUM_DAGS, TASK_NUM, DATA_SIZE_RANGE, WORKLOAD_RANGE, DAG_TYPES)
+    # Data ranges for each DAG type
+    DATA_RANGES = {
+        'linear': {'data_size_range': (25, 50), 'workload_range': (100, 300)},
+        'branching': {'data_size_range': (50, 75), 'workload_range': (200, 400)},
+        'mixed': {'data_size_range': (75, 100), 'workload_range': (150, 350)},
+        'grid': {'data_size_range': (25, 50), 'workload_range': (100, 250)},
+        'fork-join': {'data_size_range': (50, 100), 'workload_range': (300, 500)},
+        'star': {'data_size_range': (30, 60), 'workload_range': (150, 350)},
+        'tree': {'data_size_range': (60, 90), 'workload_range': (200, 400)},
+        'cycle-free-mesh': {'data_size_range': (40, 70), 'workload_range': (250, 450)},
+    }
 
-    # Split into train and test sets
-    train_datasets, test_datasets = split_train_test(datasets, TRAIN_RATIO)
+    DAG_TYPES = list(DATA_RANGES.keys())
+
+    # Create and split datasets
+    train_datasets, test_dataset = create_and_split_dag_datasets(NUM_DAGS, TASK_NUM, DATA_RANGES, DAG_TYPES, TRAIN_RATIO)
 
     # Create folders
     for folder in ['DAGs', 'data_list/train', 'data_list/test']:
@@ -198,20 +208,26 @@ if __name__ == '__main__':
 
     # Save datasets and visualize some examples
     for dag_type in DAG_TYPES:
-        # Save train dataset
+        # Save train dataset for each type
         with open(f'data_list/train/task_list_{dag_type}.pickle', 'wb') as f:
             pickle.dump(train_datasets[dag_type], f)
         
-        # Save test dataset
-        with open(f'data_list/test/task_list_{dag_type}.pickle', 'wb') as f:
-            pickle.dump(test_datasets[dag_type], f)
-        
-        # Visualize a few examples (from training set)
+        # Visualize a few examples from the training set
         for i in range(5):  # Visualize 5 examples of each type
-            visualize_dag(train_datasets[dag_type][i], f"DAGs/task_graph_{dag_type}_{i}.png")
+            visualize_dag(train_datasets[dag_type][i], f"DAGs/train_task_graph_{dag_type}_{i}.png")
 
-    print(f"Created and split {NUM_DAGS} DAGs of each type: {', '.join(DAG_TYPES)}")
+    # Save combined test dataset
+    with open(f'data_list/test/task_list_combined.pickle', 'wb') as f:
+        pickle.dump(test_dataset, f)
+    
+    # Visualize a few examples from the test set
+    for i in range(5):  # Visualize 5 examples from the test set
+        visualize_dag(test_dataset[i], f"DAGs/test_task_graph_combined_{i}.png")
+
+    print(f"Created and split {NUM_DAGS} DAGs for each of the {len(DAG_TYPES)} types")
     print(f"Train-Test split ratio: {TRAIN_RATIO:.0%}-{1-TRAIN_RATIO:.0%}")
+    print(f"Each training set has {int(NUM_DAGS * TRAIN_RATIO)} DAGs")
+    print(f"Combined test set has {len(test_dataset)} DAGs")
     print("Training datasets saved in 'data_list/train' folder")
-    print("Test datasets saved in 'data_list/test' folder")
-    print("Example visualizations (from training set) saved in 'DAGs' folder")
+    print("Combined test dataset saved in 'data_list/test' folder")
+    print("Example visualizations saved in 'DAGs' folder")

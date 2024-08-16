@@ -63,17 +63,18 @@ new_parameters = {
 }
 
 def load_dag_dataset(dag_type, split='train'):
-    with open(f'data_list/task_list_{dag_type}_{split}.pickle', 'rb') as f:
-        return pickle.load(f)
+    if split == 'test':
+        # For test, we load the combined dataset
+        with open(f'data_list/test/task_list_combined.pickle', 'rb') as f:
+            return pickle.load(f)
+    else:
+        with open(f'data_list/{split}/task_list_{dag_type}.pickle', 'rb') as f:
+            return pickle.load(f)
 
 # Load datasets for each DAG type and split
-linear_dags_train = load_dag_dataset('linear', 'train')
-branching_dags_train = load_dag_dataset('branching', 'train')
-mixed_dags_train = load_dag_dataset('mixed', 'train')
-
-linear_dags_val = load_dag_dataset('linear', 'val')
-branching_dags_val = load_dag_dataset('branching', 'val')
-mixed_dags_val = load_dag_dataset('mixed', 'val')
+dag_types = ['linear', 'branching', 'mixed', 'grid', 'star', 'tree', 'cycle-free-mesh']
+train_dags = {dag_type: load_dag_dataset(dag_type, 'train') for dag_type in dag_types}
+test_dags = load_dag_dataset('combined', 'test')
 
 def DAG_features(task_list, k):
     # Extract the specific DAG
@@ -106,20 +107,10 @@ class GNNModel(nn.Module):
         return x
 
 def user_info(users, dag_type='mixed', split='train'):
-    if split == 'train':
-        if dag_type == 'linear':
-            task_list = linear_dags_train
-        elif dag_type == 'branching':
-            task_list = branching_dags_train
-        else:
-            task_list = mixed_dags_train
-    else:  # validation
-        if dag_type == 'linear':
-            task_list = linear_dags_val
-        elif dag_type == 'branching':
-            task_list = branching_dags_val
-        else:
-            task_list = mixed_dags_val
+    if split == 'test':
+        task_list = test_dags
+    else:
+        task_list = train_dags[dag_type]
 
     user_info = {}
     for user_index in range(users):
