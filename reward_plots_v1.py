@@ -7,7 +7,7 @@ dag_types = ['linear', 'branching', 'mixed', 'grid', 'star', 'tree']
 # Load the reward data from the files
 train_rewards = {}
 val_rewards = {}
-val_file = f'text_data/global_rewards_test.txt'  # Assuming one global test file for all types
+val_file = pd.read_csv('text_data/global_rewards_test.txt', header=None)  # Load validation rewards
 for dag_type in dag_types:
     train_file = f'text_data/rewards_{dag_type}_train.txt'
     
@@ -40,7 +40,7 @@ plt.close()
 
 # Plot validation rewards
 plt.figure(figsize=(14, 7))
-plt.plot(val_file, label='Global Test - Moving Average')
+plt.plot(val_file, label='Global Test - Moving Average', linestyle='--', linewidth=2)
 plt.xlabel('Episode')
 plt.ylabel('Reward')
 plt.title('Moving Average of Global Test Rewards')
@@ -50,17 +50,17 @@ plt.savefig('results/global_test_rewards.png')
 plt.close()
 
 # Optional: Plot both training and validation rewards on the same graph
-plt.figure(figsize=(14, 7))
-for dag_type, rewards_ma in train_rewards_ma.items():
-    plt.plot(rewards_ma, label=f'{dag_type} Train - Moving Average')
-# plt.plot(val_file, label='Global Test - Moving Average', linestyle='--', linewidth=2)
+# plt.figure(figsize=(14, 7))
+# for dag_type, rewards_ma in train_rewards_ma.items():
+#     plt.plot(rewards_ma, label=f'{dag_type} Train - Moving Average')
+# # plt.plot(val_file, label='Global Test - Moving Average', linestyle='--', linewidth=2)
 
-plt.xlabel('Episode')
-plt.ylabel('Reward')
-plt.title('Moving Average of Rewards for All Agents')
-plt.legend()
-plt.grid(True)
-plt.savefig('results/combined_rewards.png')
-plt.close()
+# plt.xlabel('Episode')
+# plt.ylabel('Reward')
+# plt.title('Moving Average of Rewards for All Agents')
+# plt.legend()
+# plt.grid(True)
+# plt.savefig('results/combined_rewards.png')
+# plt.close()
 
-print("Plots have been saved as 'training_rewards.png', 'global_test_rewards.png', and 'combined_rewards.png'")
+# print("Plots have been saved as 'training_rewards.png', 'global_test_rewards.png', and 'combined_rewards.png'")

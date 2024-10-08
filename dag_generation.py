@@ -70,9 +70,9 @@ def create_dag_datasets(num_dags, task_num, data_size_range, workload_range, dag
             G = create_task(
                 task_num=task_num,
                 data_size_min=data_size_range[0],
-                data_size_max=data_size_range[1],
+                data_size_max=data_size_range[0],
                 workload_min=workload_range[0],
-                workload_max=workload_range[1],
+                workload_max=workload_range[0],
                 dag_type=dag_type
             )
             datasets[dag_type].append(G)

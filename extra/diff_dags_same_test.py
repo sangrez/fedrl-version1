@@ -9,15 +9,18 @@ def create_task(task_num, data_size_min, data_size_max, workload_min, workload_m
     G = nx.DiGraph(name=dag_type)
     
     # Create start and end nodes
-    G.add_node(0, data_size=0, computing_circle=0)  # Start node
-    G.add_node(task_num + 1, data_size=0, computing_circle=0)  # End node
+    t_data_size = np.random.uniform(data_size_min, data_size_max) * 1024
+    t_computing_circle = np.random.uniform(workload_min, workload_max) * 1000
+    G.add_node(0, data_size=t_data_size, computing_circle=t_computing_circle)  # Start node
+    
 
     # Create other nodes
     for i in range(1, task_num + 1):
         t_data_size = np.random.uniform(data_size_min, data_size_max) * 1024
-        t_computing_circle = np.random.uniform(workload_min, workload_max)
+        t_computing_circle = np.random.uniform(workload_min, workload_max)* 10000
         G.add_node(i, data_size=t_data_size, computing_circle=t_computing_circle)
-
+        
+    G.add_node(task_num + 1, data_size=t_data_size, computing_circle=t_computing_circle)  # End node
     # Create edges based on DAG type
     if dag_type == 'linear':
         create_linear_dag(G, task_num)
@@ -187,14 +190,14 @@ if __name__ == '__main__':
 
     # Data ranges for each DAG type
     DATA_RANGES = {
-        'linear': {'data_size_range': (25, 50), 'workload_range': (100, 300)},
-        'branching': {'data_size_range': (50, 75), 'workload_range': (200, 400)},
-        'mixed': {'data_size_range': (75, 100), 'workload_range': (150, 350)},
-        'grid': {'data_size_range': (25, 50), 'workload_range': (100, 250)},
-        'fork-join': {'data_size_range': (50, 100), 'workload_range': (300, 500)},
-        'star': {'data_size_range': (30, 60), 'workload_range': (150, 350)},
-        'tree': {'data_size_range': (60, 90), 'workload_range': (200, 400)},
-        'cycle-free-mesh': {'data_size_range': (40, 70), 'workload_range': (250, 450)},
+        'linear': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'branching': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'mixed': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'grid': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'fork-join': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'star': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'tree': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
+        'cycle-free-mesh': {'data_size_range': (25, 25), 'workload_range': (100, 100)},
     }
 
     DAG_TYPES = list(DATA_RANGES.keys())

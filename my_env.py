@@ -264,9 +264,9 @@ class Offloading(gym.Env):
         offload_decision, allocation_check, previous_task, cpu_resource_allocations = self.action_taken(action)
         self.reward, reward_threshold, resources_total = self.evaluate(t, offload_decision, allocation_check,
                                                                        previous_task)
-        # offload_local = self.offload_local(t)
-        # offload_edge, resources_edge = self.offload_edge(t)
-        # offload_random = self.offload_random(t, offload_decision)
+        offload_local = self.offload_local(t)
+        offload_edge, resources_edge = self.offload_edge(t)
+        offload_random = self.offload_random(t, offload_decision)
 
         next_state = self.observe(t)
         if reward_threshold != 1:
@@ -275,8 +275,8 @@ class Offloading(gym.Env):
             done = True
         self.ter_obs = next_state
         self.current_task = []
-        # return next_state, self.reward, reward_threshold, done, offload_decision, offload_local, offload_edge, offload_random, cpu_resource_allocations, resources_edge
-        return next_state, self.reward, done, reward_threshold
+        return next_state, self.reward, done, reward_threshold, offload_decision, offload_local, offload_edge, offload_random, cpu_resource_allocations, resources_edge
+        # return next_state, self.reward, done, reward_threshold
 
     def action_taken(self, action):
         value = []
@@ -348,69 +348,69 @@ class Offloading(gym.Env):
         for sublist in self.task_energy_consumption:
             self.max_energy = max(self.max_energy, max(sublist, default=0))
 
-    def calculate_reward(self, delay_weight, energy_weight, penalty_weight, energy_violation, delay_violation):
-        # Normalize delays and energies using dynamically tracked max values
-        normalized_delays = [delay / self.max_delay for sublist in self.task_time for delay in sublist]
-        normalized_energies = [energy / self.max_energy for sublist in self.task_energy_consumption for energy in
-                               sublist]
+    # def calculate_reward(self, delay_weight, energy_weight, penalty_weight, energy_violation, delay_violation):
+    #     # Normalize delays and energies using dynamically tracked max values
+    #     normalized_delays = [delay / self.max_delay for sublist in self.task_time for delay in sublist]
+    #     normalized_energies = [energy / self.max_energy for sublist in self.task_energy_consumption for energy in
+    #                            sublist]
 
-        # Calculate average normalized delay and energy
-        average_normalized_delay = sum(normalized_delays) / len(normalized_delays)
-        average_normalized_energy = sum(normalized_energies) / len(normalized_energies)
+    #     # Calculate average normalized delay and energy
+    #     average_normalized_delay = sum(normalized_delays) / len(normalized_delays)
+    #     average_normalized_energy = sum(normalized_energies) / len(normalized_energies)
 
-        # Initialize reward
-        reward = 0.0
+    #     # Initialize reward
+    #     reward = 0.0
 
-        # Penalize for delay and energy
-        reward -= (delay_weight * average_normalized_delay + energy_weight * average_normalized_energy)
+    #     # Penalize for delay and energy
+    #     reward -= (delay_weight * average_normalized_delay + energy_weight * average_normalized_energy)
 
-        # Add penalties for violations
-        if energy_violation:
-            reward -= penalty_weight * 10  # Arbitrary penalty value for energy violation
-        if delay_violation:
-            reward -= penalty_weight * 10  # Arbitrary penalty value for delay violation
+    #     # Add penalties for violations
+    #     if energy_violation:
+    #         reward -= penalty_weight * 10  # Arbitrary penalty value for energy violation
+    #     if delay_violation:
+    #         reward -= penalty_weight * 10  # Arbitrary penalty value for delay violation
 
-        return reward
+    #     return reward
 
-    def calculate_reward1(self, users_data, global_resource_usage, global_resource_capacity):
+    # def calculate_reward1(self, users_data, global_resource_usage, global_resource_capacity):
 
-        total_reward = 0
+        # total_reward = 0
 
-        # 1. Progress Reward
-        for user in users_data:
-            progress = user['completed_tasks'] / user['total_tasks']
-            total_reward += progress
+        # # 1. Progress Reward
+        # for user in users_data:
+        #     progress = user['completed_tasks'] / user['total_tasks']
+        #     total_reward += progress
 
-        # 2. Delay Penalty
-        max_makespan = max(user['current_makespan'] for user in users_data)
-        delay_penalty = self.w2 * max_makespan
-        total_reward -= delay_penalty
+        # # 2. Delay Penalty
+        # max_makespan = max(user['current_makespan'] for user in users_data)
+        # delay_penalty = self.w2 * max_makespan
+        # total_reward -= delay_penalty
 
-        # 3. Energy Penalty
-        total_energy = sum(user['energy_consumed'] for user in users_data)
-        energy_penalty = self.w3 * total_energy
-        total_reward -= energy_penalty
+        # # 3. Energy Penalty
+        # total_energy = sum(user['energy_consumed'] for user in users_data)
+        # energy_penalty = self.w3 * total_energy
+        # total_reward -= energy_penalty
 
-        # 4. Resource Utilization Penalty
-        resource_utilization = global_resource_usage / global_resource_capacity
-        resource_penalty = self.w4 * abs(0.8 - resource_utilization)  # Assuming 80% utilization is ideal
-        total_reward -= resource_penalty
+        # # 4. Resource Utilization Penalty
+        # resource_utilization = global_resource_usage / global_resource_capacity
+        # resource_penalty = self.w4 * abs(0.8 - resource_utilization)  # Assuming 80% utilization is ideal
+        # total_reward -= resource_penalty
 
-        # 5. Constraint Violations Penalties
-        for user in users_data:
-            # Energy constraint
-            energy_violation = max(0, user['energy_consumed'] - user['energy_threshold'])
-            total_reward -= self.alpha * (energy_violation / user['energy_threshold'])
+        # # 5. Constraint Violations Penalties
+        # for user in users_data:
+        #     # Energy constraint
+        #     energy_violation = max(0, user['energy_consumed'] - user['energy_threshold'])
+        #     total_reward -= self.alpha * (energy_violation / user['energy_threshold'])
 
-            # Delay constraint
-            delay_violation = max(0, user['current_makespan'] - user['deadline'])
-            total_reward -= self.beta * (delay_violation / user['deadline'])
+        #     # Delay constraint
+        #     delay_violation = max(0, user['current_makespan'] - user['deadline'])
+        #     total_reward -= self.beta * (delay_violation / user['deadline'])
 
-            # Resource constraint (per user)
-            resource_violation = max(0, user['resource_usage'] - 1.0)  # Resource usage should not exceed 100%
-            total_reward -= self.gamma * resource_violation
+        #     # Resource constraint (per user)
+        #     resource_violation = max(0, user['resource_usage'] - 1.0)  # Resource usage should not exceed 100%
+        #     total_reward -= self.gamma * resource_violation
 
-        return total_reward
+        # return total_reward
 
     def evaluate(self, t, offloading_decision, allocation_check, previous_task):
         for i in range(len(self.current_task)):
@@ -435,7 +435,8 @@ class Offloading(gym.Env):
         reward_threshold = 0
         total_delay = np.sum(self.task_time)
         total_energy = np.sum(self.task_energy_consumption)
-
+        self.average_time = total_delay / self.user_devices
+        self.average_energy = total_energy / self.user_devices
         self.overall_max_delay = max(self.overall_max_delay, total_delay)
         self.overall_max_energy = max(self.overall_max_energy, total_energy)
 
@@ -506,13 +507,13 @@ class Offloading(gym.Env):
         delay_norm = self.average_time_all_local / self.max_delay_local
 
         ETC_local = (w_energy * energy_norm + w_delay * delay_norm)
-        if not os.path.isdir(text_data_folder):
-            # If not, create it
-            os.makedirs(text_data_folder)
-        file_path = os.path.join(text_data_folder, "ETC_local.txt")
-        with open(file_path, 'a') as f:
-            f.write(f"ETC_local :  {np.round(ETC_local, 2)}, T = {t}\n")
-        return offloading_decision_local
+        # if not os.path.isdir(text_data_folder):
+        #     # If not, create it
+        #     os.makedirs(text_data_folder)
+        # file_path = os.path.join(text_data_folder, "ETC_local.txt")
+        # with open(file_path, 'a') as f:
+        #     f.write(f"ETC_local :  {np.round(ETC_local, 2)}, T = {t}\n")
+        # return offloading_decision_local
 
     def offload_edge(self, t):
         i = 0
@@ -585,12 +586,12 @@ class Offloading(gym.Env):
         delay_norm = self.average_time_all_edge / self.max_delay_edge
 
         ETC_edge = (w_energy * energy_norm + w_delay * delay_norm)
-        if not os.path.isdir(text_data_folder):
-            # If not, create it
-            os.makedirs(text_data_folder)
-        file_path = os.path.join(text_data_folder, "ETC_edge.txt")
-        with open(file_path, 'a') as f:
-            f.write(f"ETC_local :  {np.round(ETC_edge, 2)}, T = {t}\n")
+        # if not os.path.isdir(text_data_folder):
+        #     # If not, create it
+        #     os.makedirs(text_data_folder)
+        # file_path = os.path.join(text_data_folder, "ETC_edge.txt")
+        # with open(file_path, 'a') as f:
+        #     f.write(f"ETC_local :  {np.round(ETC_edge, 2)}, T = {t}\n")
 
         return offloading_decision_edge, resources_edge_sending
 
@@ -671,12 +672,12 @@ class Offloading(gym.Env):
         delay_norm = self.average_time_random / self.max_delay_random
 
         ETC_random = (w_energy * energy_norm + w_delay * delay_norm)
-        if not os.path.isdir(text_data_folder):
-            # If not, create it
-            os.makedirs(text_data_folder)
-        file_path = os.path.join(text_data_folder, "ETC_random.txt")
-        with open(file_path, 'a') as f:
-            f.write(f"ETC_local :  {np.round(ETC_random, 2)}, T = {t}\n")
+        # if not os.path.isdir(text_data_folder):
+        #     # If not, create it
+        #     os.makedirs(text_data_folder)
+        # file_path = os.path.join(text_data_folder, "ETC_random.txt")
+        # with open(file_path, 'a') as f:
+        #     f.write(f"ETC_local :  {np.round(ETC_random, 2)}, T = {t}\n")
         return offloading_decision_random
 
     # '''
@@ -739,7 +740,7 @@ class Offloading(gym.Env):
     def is_done(self):
         if len(self.offloaded_tasks) == parameter['all_tasks']:
             # print("All Offloaded")
-            # self.reward = 100
+            self.reward = 100
             return self.reward, True
         return self.reward, False
 
