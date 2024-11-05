@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 import dqn_td3_v2
 import my_env
+import my_env_v1
 import user_info
 import copy
 from tqdm import tqdm
@@ -16,12 +17,25 @@ def parse_arguments():
     parser.add_argument('--users', type=int, default=4, help='Number of users')
     parser.add_argument('--servers', type=int, default=3, help='Number of servers')
     parser.add_argument('--federated_rounds', type=int, default=20, help='Number of federated rounds')
-    parser.add_argument('--local_episodes', type=int, default=200, help='Number of local episodes')
-    parser.add_argument('--patience', type=int, default=50, help='Patience for early stopping')
-    parser.add_argument('--max_reward', type=float, default=11, help='Maximum reward')
+    parser.add_argument('--local_episodes', type=int, default=500, help='Number of local episodes')
+    parser.add_argument('--patience', type=int, default=100, help='Patience for early stopping')
+    parser.add_argument('--max_reward', type=float, default=5, help='Maximum reward')
     parser.add_argument('--seed', type=int, default=20, help='Random seed')
     parser.add_argument('--model_dir', type=str, default='models', help='Directory to save the trained models')
+    parser.add_argument('--local_episodes_no_FedRL', type=int, default=10000, help='Number of local episodes without Federated Learning')
     return parser.parse_args()
+
+TRAINING_CONFIG = {
+    "NUM_DAGS": 5000,
+    "TRAIN_RATIO": 0.8,
+    "MAJORITY_RATIO": 0.7,
+    "BATCH_SIZE": 128,
+    "LEARNING_RATE": 1e-4,
+    "MIN_BUFFER_SIZE": 1000,
+    "EPSILON_START": 1.0,
+    "EPSILON_END": 0.01,
+    "EPSILON_DECAY": 0.995
+}
 
 def setup_environment(seed_value):
     T.manual_seed(seed_value)
@@ -33,10 +47,11 @@ def setup_environment(seed_value):
     np.random.seed(seed_value)
 
 def initialize_environments(users, servers):
-    dag_types = ['linear', 'branching', 'mixed', 'grid', 'star', 'tree', 'cycle-free-mesh']
+    # dag_types = ['linear', 'branching', 'mixed', 'grid', 'star', 'tree']
+    dag_types = ['linear', 'branching', 'mixed']
     train_envs = {}
     for dag_type in dag_types:
-        train_envs[dag_type] = my_env.Offloading(users, servers, dag_type)
+        train_envs[dag_type] = my_env_v1.Offloading(users, servers, dag_type)
     
     # Use any environment to get the state and action dimensions
     env = list(train_envs.values())[0]
@@ -47,7 +62,31 @@ def initialize_environments(users, servers):
     
     return train_envs, state_dim, discrete_action_dim, continuous_action_dim, max_action
 
-def train_local(agent, env, episodes, max_reward=11, patience=50):
+def fill_replay_buffer(agent, env):
+    print("Filling replay buffer with random experiences...")
+    while len(agent.replay_buffer.storage) < TRAINING_CONFIG["MIN_BUFFER_SIZE"]:
+        state = env.reset()
+        done = False
+        t = 0
+        while not done:
+            if t == 0:
+                discrete_action = 0  # Offload locally at t=0
+                continuous_action = np.ones(env.continuous_action_space.shape[0])
+            else:
+                discrete_action = env.discrete_action_space.sample()
+                continuous_action = env.continuous_action_space.sample()
+
+            action_map = user_info.generate_offloading_combinations(env.edge_servers + 1, env.user_devices)
+            actual_offloading_decisions = action_map[discrete_action]
+            action = list(actual_offloading_decisions) + continuous_action.tolist()
+
+            next_state, reward, done, _, _, _, _, _, _, _ = env.step(t, action)
+            agent.add_transition(state, discrete_action, continuous_action, next_state, reward, done)
+            state = np.array(next_state, dtype=np.float32)
+            t += 1
+
+
+def train_local(agent, env, episodes, max_reward, patience, global_start_episode):
     episode_rewards = []
     consecutive_max_episodes = 0
     useful_data_training = {
@@ -62,63 +101,70 @@ def train_local(agent, env, episodes, max_reward=11, patience=50):
     }
 
     for episode in tqdm(range(episodes), desc="Training Progress"):
+        global_episode = global_start_episode + episode
         state = env.reset()
         done = False
         episode_reward = 0
         t = 0
 
-        total_average_time = 0
-        total_average_energy = 0
-        total_average_time_local = 0
-        total_average_energy_local = 0
-        total_average_time_edge = 0
-        total_average_energy_edge = 0
-        total_average_time_random = 0
-        total_average_energy_random = 0
-
+        # Initialize episode metrics
+        episode_metrics = {
+            'average_time': 0,
+            'average_energy': 0,
+            'average_time_local': 0,
+            'average_energy_local': 0,
+            'average_time_edge': 0,
+            'average_energy_edge': 0,
+            'average_time_random': 0,
+            'average_energy_random': 0
+        }
+        
+        # Calculate epsilon for this episode based on global_episode
+        epsilon = max(TRAINING_CONFIG["EPSILON_END"], 
+                     TRAINING_CONFIG["EPSILON_START"] * (TRAINING_CONFIG["EPSILON_DECAY"] ** global_episode))
+        
         while not done:
             if t == 0:
                 discrete_action = 0
                 continuous_action = np.ones(env.continuous_action_space.shape[0])
             else:
-                discrete_action, continuous_action = agent.select_action(state)
+                if np.random.random() < epsilon:
+                    discrete_action = env.discrete_action_space.sample()
+                    continuous_action = env.continuous_action_space.sample()
+                else:
+                    discrete_action, continuous_action = agent.select_action(state)
 
             action_map = user_info.generate_offloading_combinations(env.edge_servers + 1, env.user_devices)
             actual_offloading_decisions = action_map[discrete_action]
             action = list(actual_offloading_decisions) + continuous_action.tolist()
 
             next_state, reward, done, _, _, _, _, _, _, _ = env.step(t, action)
-            average_time, average_energy, average_time_local, average_energy_local, \
-            average_time_edge, average_energy_edge, average_time_random, average_energy_random, \
-            _, _, _, _, _, _, _, _ = env.return_useful_data()
-
-            # Accumulate the values over the episode
-            total_average_time += average_time
-            total_average_energy += average_energy
-            total_average_time_local += average_time_local
-            total_average_energy_local += average_energy_local
-            total_average_time_edge += average_time_edge
-            total_average_energy_edge += average_energy_edge
-            total_average_time_random += average_time_random
-            total_average_energy_random += average_energy_random
+            
+            # Get metrics from environment
+            metrics = env.return_useful_data()
+            if metrics[0] is not None:
+                episode_metrics['average_time'] += metrics[0]
+                episode_metrics['average_energy'] += metrics[1]
+                episode_metrics['average_time_local'] += metrics[2]
+                episode_metrics['average_energy_local'] += metrics[3]
+                episode_metrics['average_time_edge'] += metrics[4]
+                episode_metrics['average_energy_edge'] += metrics[5]
+                episode_metrics['average_time_random'] += metrics[6]
+                episode_metrics['average_energy_random'] += metrics[7]
 
             agent.add_transition(state, discrete_action, continuous_action, next_state, reward, done)
             state = np.array(next_state, dtype=np.float32)
             t += 1
             episode_reward += reward
             
-            if len(agent.replay_buffer.storage) > 256:
+            if len(agent.replay_buffer.storage) > TRAINING_CONFIG["BATCH_SIZE"]:
                 agent.train()
-        if t > 0:  # Avoid division by zero
-            useful_data_training['average_time'].append(total_average_time / t)
-            useful_data_training['average_energy'].append(total_average_energy / t)
-            useful_data_training['average_time_local'].append(total_average_time_local / t)
-            useful_data_training['average_energy_local'].append(total_average_energy_local / t)
-            useful_data_training['average_time_edge'].append(total_average_time_edge / t)
-            useful_data_training['average_energy_edge'].append(total_average_energy_edge / t)
-            useful_data_training['average_time_random'].append(total_average_time_random / t)
-            useful_data_training['average_energy_random'].append(total_average_energy_random / t)        
-    
+
+        if t > 0:
+            for key in episode_metrics:
+                averaged_value = episode_metrics[key] / t
+                useful_data_training[key].append(averaged_value)
+
         episode_rewards.append(episode_reward)
 
         if episode_reward >= max_reward:
@@ -127,7 +173,7 @@ def train_local(agent, env, episodes, max_reward=11, patience=50):
             consecutive_max_episodes = 0
         
         if consecutive_max_episodes >= patience:
-            # Convergence achieved
+            print(f"Early stopping triggered after {episode + 1} episodes")
             break
 
     return episode_rewards, useful_data_training, consecutive_max_episodes
@@ -156,7 +202,7 @@ def save_agent(agent, save_path):
 
 def train_federated(args):
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    model_save_path = os.path.join(args.model_dir, f'global_agent_{current_time}.pt')
+    model_save_path = os.path.join(args.model_dir, f'global_agent.pt')
 
     # Initialize environments
     train_envs, state_dim, discrete_action_dim, continuous_action_dim, max_action = initialize_environments(args.users, args.servers)
@@ -167,6 +213,15 @@ def train_federated(args):
     # Initialize local agents
     local_agents = {dag_type: dqn_td3_v2.JointAgent(state_dim, discrete_action_dim, continuous_action_dim, max_action)
                     for dag_type in train_envs.keys()}
+
+    # Fill replay buffers once before training
+    print("Filling replay buffers with random experiences for all agents...")
+    for dag_type, agent in local_agents.items():
+        fill_replay_buffer(agent, train_envs[dag_type])
+
+    # Initialize global episode counter
+    global_episode = 0
+    total_episodes = args.federated_rounds * args.local_episodes
 
     # Train agents
     rewards_train = {dag_type: [] for dag_type in train_envs.keys()}
@@ -180,12 +235,21 @@ def train_federated(args):
         
         # Training
         for dag_type, agent in local_agents.items():
-            round_reward, useful_data_training, _ = train_local(agent, train_envs[dag_type], episodes=args.local_episodes, max_reward=args.max_reward, patience=args.patience)
+            round_reward, useful_data_training, _ = train_local(
+                agent, train_envs[dag_type],
+                episodes=args.local_episodes,
+                max_reward=args.max_reward,
+                patience=args.patience,
+                global_start_episode=global_episode
+            )
             rewards_train[dag_type].extend(round_reward)
             
             # Append training useful data for each dag_type
             for key in useful_data_training.keys():
                 useful_data_train[dag_type][key].extend(useful_data_training[key])
+
+        # Update global_episode counter
+        global_episode += args.local_episodes
 
         # Perform federated averaging
         federated_averaging(global_agent, list(local_agents.values()))
@@ -239,16 +303,96 @@ def plot_useful_data_training(useful_data_training):
         plt.savefig(f'results/useful_data_training_{dag_type}.png')
         plt.close()
 
+def train_local_independently(args):
+    # Initialize environments and independent local agents
+    train_envs, state_dim, discrete_action_dim, continuous_action_dim, max_action = initialize_environments(args.users, args.servers)
+    
+    independent_agents = {dag_type: dqn_td3_v2.JointAgent(state_dim, discrete_action_dim, continuous_action_dim, max_action)
+                          for dag_type in train_envs.keys()}
+    
+    rewards_independent = {dag_type: [] for dag_type in train_envs.keys()}
+    useful_data_independent = {dag_type: {'average_time': [], 'average_energy': [], 'average_time_local': [],
+                                          'average_energy_local': [], 'average_time_edge': [],
+                                          'average_energy_edge': [], 'average_time_random': [],
+                                          'average_energy_random': []} for dag_type in train_envs.keys()}
+
+    # Fill replay buffers once before training
+    print("Filling replay buffers with random experiences for independent agents...")
+    for dag_type, agent in independent_agents.items():
+        fill_replay_buffer(agent, train_envs[dag_type])
+
+    # Initialize global episode counter
+    global_episode = 0
+    total_episodes = args.local_episodes_no_FedRL
+
+    for dag_type, agent in independent_agents.items():
+        print(f"Training Independent Agent for DAG Type: {dag_type}")
+        rewards, useful_data_training, _ = train_local(
+            agent, train_envs[dag_type],
+            episodes=args.local_episodes_no_FedRL,
+            max_reward=args.max_reward,
+            patience=args.patience,
+            global_start_episode=global_episode
+        )
+        
+        # Save rewards and useful data for comparison
+        rewards_independent[dag_type].extend(rewards)
+        for key in useful_data_training.keys():
+            useful_data_independent[dag_type][key].extend(useful_data_training[key])
+        
+        # Save the independently trained model for each DAG type
+        model_save_path = os.path.join(args.model_dir, f'independent_agent_{dag_type}.pt')
+        save_agent(agent, model_save_path)
+    
+    return rewards_independent, useful_data_independent
+
+def save_rewards_and_useful_data_to_file(rewards_train_federated, useful_data_train_federated, rewards_train_independent, useful_data_train_independent):
+    # Save rewards for federated training
+    for dag_type, rewards in rewards_train_federated.items():
+        with open(f'text_data/rewards_train_federated_{dag_type}_train.txt', 'w') as f:
+            for reward in rewards:
+                f.write(f"{reward}\n")
+
+    # Save useful data for federated training
+    with open('text_data/useful_data_train_federated.txt', 'w') as f:
+        f.write("dag_type,average_time,average_energy,average_time_local,average_energy_local,average_time_edge,average_energy_edge,average_time_random,average_energy_random\n")
+        for dag_type, data in useful_data_train_federated.items():
+            for i in range(len(data['average_time'])):
+                f.write(f"{dag_type},{data['average_time'][i]},{data['average_energy'][i]},{data['average_time_local'][i]},{data['average_energy_local'][i]},"
+                        f"{data['average_time_edge'][i]},{data['average_energy_edge'][i]},{data['average_time_random'][i]},{data['average_energy_random'][i]}\n")
+    
+    # Save rewards for independent training
+    for dag_type, rewards in rewards_train_independent.items():
+        with open(f'text_data/rewards_train_independent_{dag_type}_train.txt', 'w') as f:
+            for reward in rewards:
+                f.write(f"{reward}\n")
+
+    # Save useful data for independent training
+    with open('text_data/useful_data_train_independent.txt', 'w') as f:
+        f.write("dag_type,average_time,average_energy,average_time_local,average_energy_local,average_time_edge,average_energy_edge,average_time_random,average_energy_random\n")
+        for dag_type, data in useful_data_train_independent.items():
+            for i in range(len(data['average_time'])):
+                f.write(f"{dag_type},{data['average_time'][i]},{data['average_energy'][i]},{data['average_time_local'][i]},{data['average_energy_local'][i]},"
+                        f"{data['average_time_edge'][i]},{data['average_energy_edge'][i]},{data['average_time_random'][i]},{data['average_energy_random'][i]}\n")
+
 def main():
     args = parse_arguments()
     setup_environment(args.seed)
 
     # Train Federated Model
-    rewards_train, useful_data_train, global_agent = train_federated(args)
+    print("Starting Federated Learning Training...")
+    rewards_train_federated, useful_data_train_federated, global_agent = train_federated(args)
 
+    # Train Independent Local Agents
+    print("Starting Independent Training of Local Agents...")
+    # rewards_train_independent, useful_data_train_independent = train_local_independently(args)
+
+    # save_rewards_and_useful_data_to_file(rewards_train_federated, useful_data_train_federated, rewards_train_independent, useful_data_train_independent)
     # Save results and plot as necessary
-    plot_training_test_rewards(rewards_train)
-    plot_useful_data_training(useful_data_train)
+    plot_training_test_rewards(rewards_train_federated)  # Plot for Federated Training
+    # plot_training_test_rewards(rewards_train_independent)  # Plot for Independent Training
+    plot_useful_data_training(useful_data_train_federated)  # Useful data for Federated
+    # plot_useful_data_training(useful_data_train_independent)  # Useful data for Independent
 
 if __name__ == "__main__":
     main()

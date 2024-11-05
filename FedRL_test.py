@@ -14,9 +14,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Federated Learning Testing for Task Offloading')
     parser.add_argument('--users', type=int, default=4, help='Number of users')
     parser.add_argument('--servers', type=int, default=3, help='Number of servers')
-    parser.add_argument('--test_episodes', type=int, default=100, help='Number of test episodes')
+    parser.add_argument('--test_episodes', type=int, default=10, help='Number of test episodes')
     parser.add_argument('--seed', type=int, default=20, help='Random seed')
-    parser.add_argument('--model_path', type=str, default='models/global_agent_20241004-132843.pt', help='Path to load the trained global model')
+    parser.add_argument('--model_path', type=str, default='models/global_agent.pt', help='Path to load the trained global model')
     return parser.parse_args()
 
 def setup_environment(seed_value):
@@ -29,15 +29,21 @@ def setup_environment(seed_value):
     np.random.seed(seed_value)
 
 def initialize_environments(users, servers):
-    test_env = my_env.Offloading(users, servers, 'combined', split='test')
+    dag_types = ['linear', 'branching', 'mixed', 'grid', 'star', 'tree',]
+    # dag_types = ['linear', 'branching', 'mixed']
+    test_envs = {}
+    for dag_type in dag_types:
+        test_envs[dag_type] = my_env.Offloading(users, servers, dag_type, split='test')
+    
+    # Use any environment to get the state and action dimensions
+    env = list(test_envs.values())[0]
+    state_dim = env.observation_space.shape[0]
+    discrete_action_dim = env.discrete_action_space.n
+    continuous_action_dim = env.continuous_action_space.shape[0]
+    max_action = float(env.continuous_action_space.high[0])
+    
+    return test_envs, state_dim, discrete_action_dim, continuous_action_dim, max_action
 
-    # Get state and action dimensions from the test environment
-    state_dim = test_env.observation_space.shape[0]
-    discrete_action_dim = test_env.discrete_action_space.n
-    continuous_action_dim = test_env.continuous_action_space.shape[0]
-    max_action = float(test_env.continuous_action_space.high[0])
-
-    return test_env, state_dim, discrete_action_dim, continuous_action_dim, max_action
 
 def test_agent(agent, env, num_episodes):
     agent.eval()
@@ -118,8 +124,8 @@ def test_agent(agent, env, num_episodes):
 def test_model(args):
     setup_environment(args.seed)
 
-    # Initialize test environment
-    test_env, state_dim, discrete_action_dim, continuous_action_dim, max_action = initialize_environments(args.users, args.servers)
+    # Initialize test environments for all DAG types
+    test_envs, state_dim, discrete_action_dim, continuous_action_dim, max_action = initialize_environments(args.users, args.servers)
 
     # Initialize global agent
     global_agent = dqn_td3_v2.JointAgent(state_dim, discrete_action_dim, continuous_action_dim, max_action)
@@ -133,63 +139,104 @@ def test_model(args):
     global_agent.set_weights(loaded_weights)
     print(f"Loaded global model from {args.model_path}")
 
-    # Test the global agent and collect useful data
-    global_rewards_test, useful_data = test_agent(global_agent, test_env, num_episodes=args.test_episodes)
+    # Test the global agent on each DAG type and collect useful data
+    all_results = {}
+    for dag_type, env in test_envs.items():
+        print(f"Testing on {dag_type} DAG...")
+        global_rewards_test, useful_data = test_agent(global_agent, env, num_episodes=args.test_episodes)
+        all_results[dag_type] = {
+            'rewards': global_rewards_test,
+            'useful_data': useful_data
+        }
 
-    # Save test results
-    save_rewards_and_useful_data_to_file(global_rewards_test, useful_data)
+    # Save test results for all DAG types
+    save_all_results_to_file(all_results)
 
-    print("Testing complete, results saved to 'text_data/global_test_rewards.txt'")
+    print("Testing complete, results saved to 'text_data/global_test_results.txt'")
 
-    return global_rewards_test, useful_data
+    return all_results
 
-def save_rewards_and_useful_data_to_file(global_rewards_test, useful_data):
-    with open('text_data/global_rewards_test.txt', 'w') as f:
-        for reward in global_rewards_test:
-            f.write(f"{reward}\n")
+def save_all_results_to_file(all_results):
+    # Create a directory to store the results if it doesn't exist
+    os.makedirs('text_data', exist_ok=True)
 
-    # Save useful data for testing
-    with open('text_data/useful_data_test.txt', 'w') as f:
-        f.write("average_time,average_energy,average_time_local,average_energy_local,average_time_edge,average_energy_edge,average_time_random,average_energy_random\n")
-        for i in range(len(useful_data['average_time'])):
-            f.write(f"{useful_data['average_time'][i]},{useful_data['average_energy'][i]},{useful_data['average_time_local'][i]},{useful_data['average_energy_local'][i]}," +
-                    f"{useful_data['average_time_edge'][i]},{useful_data['average_energy_edge'][i]},{useful_data['average_time_random'][i]},{useful_data['average_energy_random'][i]}\n")
+    for dag_type, results in all_results.items():
+        # Save rewards
+        rewards_file = f'text_data/{dag_type}_rewards.txt'
+        with open(rewards_file, 'w') as f:
+            f.write("Episode,Reward\n")
+            for episode, reward in enumerate(results['rewards']):
+                f.write(f"{episode},{reward}\n")
+        
+        # Save useful data
+        useful_data_file = f'text_data/{dag_type}_useful_data.txt'
+        with open(useful_data_file, 'w') as f:
+            f.write("Episode,average_time,average_energy,average_time_local,average_energy_local,average_time_edge,average_energy_edge,average_time_random,average_energy_random\n")
+            useful_data = results['useful_data']
+            for i in range(len(useful_data['average_time'])):
+                f.write(f"{i},{useful_data['average_time'][i]},{useful_data['average_energy'][i]},{useful_data['average_time_local'][i]},{useful_data['average_energy_local'][i]}," +
+                        f"{useful_data['average_time_edge'][i]},{useful_data['average_energy_edge'][i]},{useful_data['average_time_random'][i]},{useful_data['average_energy_random'][i]}\n")
+        
+        print(f"Saved results for {dag_type} DAG to '{rewards_file}' and '{useful_data_file}'")
 
-def plot_useful_data(useful_data):
-    episodes = range(len(useful_data['average_time']))
+def plot_all_useful_data(all_results):
+    # Create a directory to store the plots if it doesn't exist
+    os.makedirs('results', exist_ok=True)
 
-    plt.figure(figsize=(12, 6))
+    for dag_type, results in all_results.items():
+        useful_data = results['useful_data']
+        episodes = range(len(useful_data['average_time']))
 
-    # Plot average time
-    plt.subplot(2, 1, 1)
-    plt.plot(episodes, useful_data['average_time'], label='Average Time')
-    plt.plot(episodes, useful_data['average_time_local'], label='Local Average Time')
-    plt.plot(episodes, useful_data['average_time_edge'], label='Edge Average Time')
-    plt.plot(episodes, useful_data['average_time_random'], label='Random Average Time')
-    plt.xlabel('Episodes')
-    plt.ylabel('Time')
-    plt.legend()
-    plt.title('Average Time over Episodes')
+        # Create a new figure for each DAG type
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+        
+        # Plot average time
+        ax1.plot(episodes, useful_data['average_time'], label='Average Time')
+        ax1.plot(episodes, useful_data['average_time_local'], label='Local Average Time')
+        ax1.plot(episodes, useful_data['average_time_edge'], label='Edge Average Time')
+        ax1.plot(episodes, useful_data['average_time_random'], label='Random Average Time')
+        ax1.set_xlabel('Episodes')
+        ax1.set_ylabel('Time')
+        ax1.legend()
+        ax1.set_title(f'{dag_type} DAG - Average Time')
+        
+        # Plot average energy
+        ax2.plot(episodes, useful_data['average_energy'], label='Average Energy')
+        ax2.plot(episodes, useful_data['average_energy_local'], label='Local Average Energy')
+        ax2.plot(episodes, useful_data['average_energy_edge'], label='Edge Average Energy')
+        ax2.plot(episodes, useful_data['average_energy_random'], label='Random Average Energy')
+        ax2.set_xlabel('Episodes')
+        ax2.set_ylabel('Energy')
+        ax2.legend()
+        ax2.set_title(f'{dag_type} DAG - Average Energy')
 
-    # Plot average energy
-    plt.subplot(2, 1, 2)
-    plt.plot(episodes, useful_data['average_energy'], label='Average Energy')
-    plt.plot(episodes, useful_data['average_energy_local'], label='Local Average Energy')
-    plt.plot(episodes, useful_data['average_energy_edge'], label='Edge Average Energy')
-    plt.plot(episodes, useful_data['average_energy_random'], label='Random Average Energy')
-    plt.xlabel('Episodes')
-    plt.ylabel('Energy')
-    plt.legend()
-    plt.title('Average Energy over Episodes')
+        plt.tight_layout()
+        plt.savefig(f'results/{dag_type}_dag_useful_data_plot.png')
+        plt.close()
 
+        print(f"Saved plot for {dag_type} DAG to 'results/{dag_type}_dag_useful_data_plot.png'")
+
+    # Plot rewards for all DAG types in a single figure
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for dag_type, results in all_results.items():
+        rewards = results['rewards']
+        episodes = range(len(rewards))
+        ax.plot(episodes, rewards, label=f'{dag_type} DAG')
+
+    ax.set_xlabel('Episodes')
+    ax.set_ylabel('Reward')
+    ax.legend()
+    ax.set_title('Rewards for All DAG Types')
     plt.tight_layout()
-    plt.savefig('results/useful_data_plot.png')
+    plt.savefig('results/all_dag_rewards_plot.png')
     plt.close()
+
+    print("Saved combined rewards plot to 'results/all_dag_rewards_plot.png'")
 
 def main():
     args = parse_arguments()
-    global_rewards_test, useful_data = test_model(args)  # Test the model
-    plot_useful_data(useful_data)  # Plot useful data after testing
+    all_results = test_model(args)  # Test the model on all DAG types
+    plot_all_useful_data(all_results) 
 
 if __name__ == "__main__":
     main()

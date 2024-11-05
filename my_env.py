@@ -680,7 +680,6 @@ class Offloading(gym.Env):
         #     f.write(f"ETC_local :  {np.round(ETC_random, 2)}, T = {t}\n")
         return offloading_decision_random
 
-    # '''
     def return_useful_data(self):
         return (self.average_time, self.average_energy, self.average_time_all_local, self.average_energy_all_local,
                 self.average_time_all_edge,
@@ -689,26 +688,6 @@ class Offloading(gym.Env):
                 self.residual_energy_edge, self.residual_energy_random, self.average_transmission_time,
                 self.average_transmission_time_l, self.average_transmission_time_e, self.average_transmission_time_r)
 
-    # def observe(self, t):
-    #     self.very_next_state = []
-    #     parameter['channel_gain'] = np.zeros(self.user_devices)
-    #     for i in range(self.user_devices):
-    #         self.channel_gain = np.random.randint(self.min_channel_gain, self.max_channel_gain)
-    #         self.device_power_value = parameter['residual_power'][i]
-    #         # self.task_state = np.round(self.user_info[i]['GNN_state'][t].item(), 2)
-    #         parameter['channel_gain'][i] = self.channel_gain
-    #         # Normalize the channel gain
-    #         channel_gain_normalized = np.round((self.channel_gain - (-50)) / ((-8) - (-50)), 2)
-    #         # Normalize the device power value
-    #         device_power_value_normalized = np.round((self.device_power_value - 0) / (self.max_device_power - 0), 2)
-
-    #         self.very_next_state.extend([channel_gain_normalized, device_power_value_normalized])  # self.task_state])
-
-    #     # Normalize the number of offloaded tasks
-    #     offloaded_tasks_normalized = np.round((len(self.offloaded_tasks) - 0) / (100 - 0), 2)
-
-    #     self.very_next_state.extend([offloaded_tasks_normalized])
-    #     return self.very_next_state
     def observe(self, t):
         self.very_next_state = []
         for i in range(self.user_devices):

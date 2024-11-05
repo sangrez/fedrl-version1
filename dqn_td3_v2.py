@@ -4,19 +4,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import copy
+from FedRL_main_train_only import TRAINING_CONFIG
 
 device = T.device("cuda" if T.cuda.is_available() else "cpu")
 
 class DeepQNetwork(nn.Module):
-    def __init__(self, lr, input_dims, fc1_dims, fc2_dims, n_actions):
+    def __init__(self, lr, input_dims, fc1_dims, fc2_dims, fc3_dims, n_actions):
         super(DeepQNetwork, self).__init__()
         self.input_dims = input_dims
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
+        self.fc3_dims = fc3_dims
         self.n_actions = n_actions
         self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
-        self.fc3 = nn.Linear(self.fc2_dims, self.n_actions)
+        self.fc3 = nn.Linear(self.fc2_dims, self.fc3_dims)
+        self.fc4 = nn.Linear(self.fc3_dims, self.n_actions)
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
         self.loss = nn.MSELoss()
         self.to(device)
@@ -24,7 +27,8 @@ class DeepQNetwork(nn.Module):
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        actions = self.fc3(x)
+        x = F.relu(self.fc3(x))
+        actions = self.fc4(x)
         return actions
 
 class Actor(nn.Module):
@@ -32,13 +36,15 @@ class Actor(nn.Module):
         super(Actor, self).__init__()
         self.l1 = nn.Linear(state_dim, 256)
         self.l2 = nn.Linear(256, 256)
-        self.l3 = nn.Linear(256, action_dim)
+        self.l3 = nn.Linear(256, 256)
+        self.l4 = nn.Linear(256, action_dim)
         self.max_action = max_action
 
     def forward(self, state):
         a = F.relu(self.l1(state))
         a = F.relu(self.l2(a))
-        return self.max_action * (0.9 * T.sigmoid(self.l3(a)) + 0.1)
+        a = F.relu(self.l3(a))
+        return self.max_action * (0.9 * T.sigmoid(self.l4(a)) + 0.1)
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -46,27 +52,32 @@ class Critic(nn.Module):
         # First Q function
         self.l1 = nn.Linear(state_dim + action_dim, 256)
         self.l2 = nn.Linear(256, 256)
-        self.l3 = nn.Linear(256, 1)
+        self.l3 = nn.Linear(256, 256)
+        self.l4 = nn.Linear(256, 1)
         # Second Q function
-        self.l4 = nn.Linear(state_dim + action_dim, 256)
-        self.l5 = nn.Linear(256, 256)
-        self.l6 = nn.Linear(256, 1)
+        self.l5 = nn.Linear(state_dim + action_dim, 256)
+        self.l6 = nn.Linear(256, 256)
+        self.l7 = nn.Linear(256, 256)
+        self.l8 = nn.Linear(256, 1)
 
     def forward(self, state, action):
         sa = T.cat([state, action], 1)
         q1 = F.relu(self.l1(sa))
         q1 = F.relu(self.l2(q1))
-        q1 = self.l3(q1)
-        q2 = F.relu(self.l4(sa))
-        q2 = F.relu(self.l5(q2))
-        q2 = self.l6(q2)
+        q1 = F.relu(self.l3(q1))
+        q1 = self.l4(q1)
+        q2 = F.relu(self.l5(sa))
+        q2 = F.relu(self.l6(q2))
+        q2 = F.relu(self.l7(q2))
+        q2 = self.l8(q2)
         return q1, q2
 
     def Q1(self, state, action):
         sa = T.cat([state, action], 1)
         q1 = F.relu(self.l1(sa))
         q1 = F.relu(self.l2(q1))
-        q1 = self.l3(q1)
+        q1 = F.relu(self.l3(q1))
+        q1 = self.l4(q1)
         return q1
 
 class ReplayBuffer(object):
@@ -118,7 +129,7 @@ class TD3(object):
     ):
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=5e-4)
 
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
@@ -197,17 +208,27 @@ class TD3(object):
 
 class JointAgent:
     def __init__(self, state_dim, discrete_action_dim, continuous_action_dim, max_action):
-        self.dqn = DeepQNetwork(lr=3e-4, input_dims=[state_dim], fc1_dims=256, fc2_dims=256, n_actions=discrete_action_dim)
+        # Use lower learning rate
+        lr = TRAINING_CONFIG["LEARNING_RATE"]
+        
+        self.dqn = DeepQNetwork(lr=lr, input_dims=[state_dim], 
+                               fc1_dims=256, fc2_dims=256, fc3_dims=256, 
+                               n_actions=discrete_action_dim)
         self.dqn_target = copy.deepcopy(self.dqn)
+        
         self.td3 = TD3(state_dim, continuous_action_dim, max_action)
         self.replay_buffer = ReplayBuffer()
         self.max_action = max_action
-        self.gamma = 0.99
-        self.tau = 0.005
-        self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.999
+        
+        # Modified exploration parameters
+        self.epsilon = TRAINING_CONFIG["EPSILON_START"]
+        self.epsilon_min = TRAINING_CONFIG["EPSILON_END"]
+        self.epsilon_decay = TRAINING_CONFIG["EPSILON_DECAY"]
+        
         self.training = True
+        self.gamma = 0.99
+        self.tau = 0.001
+
 
     def train(self):
         self.training = True
@@ -238,7 +259,7 @@ class JointAgent:
         self.replay_buffer.add(state, action, next_state, reward, done)
 
     def train(self):
-        if len(self.replay_buffer.storage) > 256:
+        if len(self.replay_buffer.storage) > 1024:
             states, actions, next_states, rewards, dones = self.replay_buffer.sample(256)
 
             # Separate discrete and continuous actions
